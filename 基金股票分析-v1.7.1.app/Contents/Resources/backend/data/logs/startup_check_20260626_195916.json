@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-06-26T19:59:16.000712",
+  "checks": {
+    "network": "pass",
+    "akshare": "pass",
+    "database": "pass",
+    "data_dir": "pass",
+    "ai": "warning",
+    "memory": "pass",
+    "modules": "pass"
+  },
+  "overall": "pass",
+  "warnings": [
+    "AI接口不可用，已自动切换离线模式",
+    "psutil未安装，跳过内存检查"
+  ],
+  "errors": []
+}
