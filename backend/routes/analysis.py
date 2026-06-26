@@ -41,10 +41,10 @@ async def analyze(code: str, category: str = Query("stock")):
         "name": quote["name"],
         "price": quote["price"],
         "change_pct": quote["change_pct"],
-        "recommendation": result["recommendation"],
-        "confidence": result["confidence"],
-        "reasoning": result["reasoning"],
-        "suggested_ratio": result["suggested_ratio"],
+        "recommendation": result.get("recommendation", "hold"),
+        "confidence": result.get("confidence", 0.5),
+        "reasoning": result.get("reasoning", result.get("reason", "")),
+        "suggested_ratio": result.get("suggested_ratio", 0.0),
         "buy_reasons": result.get("buy_reasons", []),
         "sell_reasons": result.get("sell_reasons", []),
         "risk_level": result.get("risk_level", "medium"),
@@ -179,29 +179,30 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
 
     filtered = df[
         (df["最新价"] > 2) &
-        (df["最新价"] < 200) &
-        (df["涨跌幅"] > -3) &
-        (df["涨跌幅"] < 7) &
-        (df["成交额"] > 50000000)
+        (df["最新价"] < 500) &
+        (df["涨跌幅"] > -5) &
+        (df["涨跌幅"] < 9) &
+        (df["成交额"] > 20000000)
     ]
 
     if filtered.empty:
         return []
 
-    # 向量化计算综合评分（大幅提升速度）
+    # 向量化计算综合评分（更激进：振幅权重更高，追逐高波动高收益）
     filtered = filtered.copy()
     pre_close = filtered["最新价"] - filtered["涨跌额"]
     amp = ((filtered["最高"] - filtered["最低"]) / pre_close * 100).fillna(0)
-    change_score = ((filtered["涨跌幅"] + 3) / 10 * 100).clip(0, 100)
+    change_score = ((filtered["涨跌幅"] + 5) / 14 * 100).clip(0, 100)
     amount_rank = filtered["成交额"].rank(pct=True) * 100
-    amp_score = (amp * 10).clip(0, 100)
-    volume_score = 50.0  # 量比暂时用默认值
+    amp_score = (amp * 7).clip(0, 100)  # 振幅评分权重降低，避免追高
+    volume_score = 50.0
 
+    # 更注重换手率/成交额排名，振幅和涨跌幅次之
     filtered["composite_score"] = (
-        change_score * 0.30 +
-        volume_score * 0.25 +
-        amp_score * 0.15 +
-        amount_rank * 0.30
+        change_score * 0.20 +
+        volume_score * 0.15 +
+        amp_score * 0.25 +
+        amount_rank * 0.40
     )
 
     top_candidates = filtered.nlargest(50, "composite_score")  # 增加到50只
@@ -234,17 +235,19 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
             with _progress_lock:
                 _recommend_progress["done"] = 10 + int(60 * done_count[0] / total_candidates)
 
-            if net_score >= 2 and result.get("recommendation") in ("buy", "hold"):
+            if net_score >= 0 and result.get("recommendation") in ("buy", "hold", "sell"):
                 indicators = result.get("indicators", {})
                 target = result.get("target_price")
                 upside_pct = ((target - price) / price * 100) if target and price > 0 else 0
 
                 if net_score >= 4:
                     strength = "强势推荐"
-                elif net_score >= 3:
+                elif net_score >= 2:
                     strength = "推荐"
-                else:
+                elif net_score >= 0:
                     strength = "关注"
+                else:
+                    strength = "卖出信号"
 
                 return {
                     "code": code,
@@ -303,10 +306,10 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
 
     try:
         filtered = df[
-            (df["最新价"] > 0.8) &
-            (df["涨跌幅"] > -4) &
-            (df["涨跌幅"] < 6) &
-            (df["成交额"] > 10000000)
+            (df["最新价"] > 0.5) &
+            (df["涨跌幅"] > -5) &
+            (df["涨跌幅"] < 8) &
+            (df["成交额"] > 5000000)
         ]
     except Exception:
         return []
@@ -316,7 +319,7 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
 
     # 向量化评分
     filtered = filtered.copy()
-    change_score = ((filtered["涨跌幅"] + 4) / 10 * 100).clip(0, 100)
+    change_score = ((filtered["涨跌幅"] + 5) / 13 * 100).clip(0, 100)
     amount_rank = filtered["成交额"].rank(pct=True) * 100
     filtered["etf_score"] = change_score * 0.4 + amount_rank * 0.6
 
@@ -348,14 +351,14 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
             with _progress_lock:
                 _recommend_progress["done"] = 70 + int(30 * done_count[0] / total_candidates)
 
-            if net_score >= 1:
+            if net_score >= 0:
                 indicators = result.get("indicators", {})
                 target = result.get("target_price")
                 upside_pct = ((target - price) / price * 100) if target and price > 0 else 0
 
                 if net_score >= 3:
                     strength = "强势推荐"
-                elif net_score >= 2:
+                elif net_score >= 1:
                     strength = "推荐"
                 else:
                     strength = "关注"

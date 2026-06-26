@@ -48,11 +48,19 @@ async def positions():
     positions = get_positions()
     result = []
     for p in positions:
+        code = p["code"]
+        ptype = p["type"]
+        
+        # 自动识别ETF代码（51/15/16开头）
+        is_etf = code.startswith(("51", "15", "16", "13")) or ptype == "etf"
+        
         # 获取实时价格
-        if p["type"] in ("stock", "etf", "stock_hk"):
-            quote = get_stock_quote(p["code"])
+        if is_etf:
+            quote = get_fund_quote(code)
+        elif ptype == "stock_hk":
+            quote = get_stock_quote(code, category="stock_hk")
         else:
-            quote = get_fund_quote(p["code"])
+            quote = get_stock_quote(code)
 
         current_price = quote["price"] if quote else 0
         market_value = current_price * p["shares"]

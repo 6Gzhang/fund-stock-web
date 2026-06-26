@@ -703,8 +703,8 @@ const App = {
                     <td>${p.name}</td>
                     <td><span class="search-result-type type-${p.type}">${typeLabels[p.type] || p.type}</span></td>
                     <td>${p.shares}</td>
-                    <td>${p.cost_price.toFixed(2)}</td>
-                    <td class="${p.current_price >= p.cost_price ? 'up' : 'down'}">${p.current_price.toFixed(2)}</td>
+                    <td>${(p.avg_cost || 0).toFixed(2)}</td>
+                    <td class="${p.current_price >= (p.avg_cost || 0) ? 'up' : 'down'}">${p.current_price.toFixed(2)}</td>
                     <td>${p.market_value.toFixed(2)}</td>
                     <td class="${p.profit >= 0 ? 'up' : 'down'}">${p.profit >= 0 ? '+' : ''}${p.profit.toFixed(2)}</td>
                     <td class="${p.profit_pct >= 0 ? 'up' : 'down'}">${p.profit_pct >= 0 ? '+' : ''}${p.profit_pct.toFixed(2)}%</td>

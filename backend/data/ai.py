@@ -1,24 +1,239 @@
 """
-AI 智能分析模块 - 基于 OpenAI 兼容 API + 多维度技术分析
+AI 智能分析模块 - 硅基流动千问2.5-7B + 多维度技术分析
 """
 import os
 import json
 import math
-from openai import OpenAI
+import urllib.request
+import urllib.error
+from typing import Optional
 
-# 从环境变量读取 API 配置
-API_KEY = os.environ.get("OPENAI_API_KEY", "")
-API_BASE = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
-MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
+# 硅基流动 API 配置
+SILICONFLOW_API_KEY = ""
+SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1/chat/completions"
+SILICONFLOW_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
-client = None
+# DeepSeek 备用
+DEEPSEEK_API_KEY = ""
+DEEPSEEK_API_BASE = "https://api.deepseek.com/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-chat"
 
 
-def get_client():
-    global client
-    if client is None and API_KEY:
-        client = OpenAI(api_key=API_KEY, base_url=API_BASE)
-    return client
+def _load_api_keys():
+    """加载 API Keys（优先从模块配置，其次环境变量）"""
+    global SILICONFLOW_API_KEY, DEEPSEEK_API_KEY
+    if not SILICONFLOW_API_KEY:
+        try:
+            from modules.sim_executor import get_module_config
+            cfg = get_module_config()
+            SILICONFLOW_API_KEY = cfg.get("siliconflow_api_key", "") or os.environ.get("SILICONFLOW_API_KEY", "")
+        except Exception:
+            SILICONFLOW_API_KEY = os.environ.get("SILICONFLOW_API_KEY", "")
+    if not DEEPSEEK_API_KEY:
+        try:
+            from modules.sim_executor import get_module_config
+            cfg = get_module_config()
+            DEEPSEEK_API_KEY = cfg.get("deepseek_api_key", "") or os.environ.get("DEEPSEEK_API_KEY", "")
+        except Exception:
+            DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+
+
+def _call_ai_api(prompt: str, use_fallback: bool = False) -> Optional[str]:
+    """调用 AI API（主：硅基千问，备：DeepSeek）"""
+    _load_api_keys()
+    
+    if use_fallback:
+        api_key = DEEPSEEK_API_KEY
+        api_base = DEEPSEEK_API_BASE
+        model = DEEPSEEK_MODEL
+    else:
+        api_key = SILICONFLOW_API_KEY
+        api_base = SILICONFLOW_API_BASE
+        model = SILICONFLOW_MODEL
+    
+    if not api_key:
+        return None
+    
+    try:
+        data = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "你是一个专业的股票分析师，请用中文回答，给出简洁专业的分析。只返回JSON格式。"},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 1024,
+            "temperature": 0.3,
+        }).encode("utf-8")
+        
+        req = urllib.request.Request(
+            api_base,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return content
+    except Exception as e:
+        print(f"AI API调用失败({model}): {e}")
+        return None
+
+
+def _safe_json_parse(json_str: str) -> Optional[dict]:
+    """安全解析JSON，自动修复常见格式错误和字段名映射"""
+    # 尝试直接解析
+    try:
+        result = json.loads(json_str)
+        return _normalize_ai_result(result)
+    except json.JSONDecodeError:
+        pass
+    
+    # 修复常见问题
+    try:
+        import re
+        # 修复: 中文引号替换
+        fixed = json_str.replace('\u201c', '"').replace('\u201d', '"')
+        fixed = fixed.replace('\u2018', "'").replace('\u2019', "'")
+        # 修复: 缺少逗号
+        fixed = re.sub(r'"\s*\n\s*"', '",\n  "', fixed)
+        # 修复: 尾部多余逗号
+        fixed = re.sub(r',\s*}', '}', fixed)
+        fixed = re.sub(r',\s*]', ']', fixed)
+        # 修复: 数字前导零 (如 00 → 0)
+        fixed = re.sub(r':\s*0+(?=[,\s\n}])', r': 0', fixed)
+        result = json.loads(fixed)
+        return _normalize_ai_result(result)
+    except (json.JSONDecodeError, Exception):
+        pass
+    
+    # 最后尝试: 逐字段提取（支持多种字段名）
+    try:
+        import re
+        result = {}
+        
+        # 字段名映射（AI可能返回的变体 → 标准名）
+        field_aliases = {
+            "recommendation": ["recommendation", "recommend", "suggestion", "action", "advice", "操作建议"],
+            "confidence": ["confidence", "score", "conf", "置信度"],
+            "reasoning": ["reasoning", "reason", "analysis", "detail", "分析", "理由"],
+            "suggested_ratio": ["suggested_ratio", "ratio", "position", "仓位", "建议仓位"],
+            "risk_level": ["risk_level", "risk", "riskLevel", "风险等级", "风险"],
+            "target_price": ["target_price", "target", "targetPrice", "目标价", "目标价格"],
+        }
+        
+        for std_name, aliases in field_aliases.items():
+            for alias in aliases:
+                # 匹配 "alias": value
+                pattern = rf'"{alias}"\s*:\s*'
+                match = re.search(pattern + r'([^,}\]]+)', json_str)
+                if match:
+                    val = match.group(1).strip().strip('"').strip("'")
+                    if std_name == "confidence":
+                        try:
+                            result[std_name] = min(1.0, max(0.0, float(val)))
+                        except ValueError:
+                            result[std_name] = 0.5
+                    elif std_name == "suggested_ratio":
+                        try:
+                            result[std_name] = min(1.0, max(0.0, float(val)))
+                        except ValueError:
+                            result[std_name] = 0.1
+                    elif std_name == "target_price":
+                        try:
+                            result[std_name] = float(val)
+                        except ValueError:
+                            result[std_name] = None
+                    elif std_name == "risk_level":
+                        val_lower = val.lower()
+                        if "high" in val_lower or "高" in val_lower:
+                            result[std_name] = "high"
+                        elif "low" in val_lower or "低" in val_lower:
+                            result[std_name] = "low"
+                        else:
+                            result[std_name] = "medium"
+                    else:
+                        result[std_name] = val
+                    break
+        
+        # 提取数组字段
+        arr_aliases = {
+            "buy_reasons": ["buy_reasons", "buyReasons", "买入理由", "买入"],
+            "sell_reasons": ["sell_reasons", "sellReasons", "卖出理由", "卖出", "风险提示"],
+        }
+        for std_name, aliases in arr_aliases.items():
+            for alias in aliases:
+                arr_match = re.search(rf'"{alias}"\s*:\s*\[(.*?)\]', json_str, re.DOTALL)
+                if arr_match:
+                    items = re.findall(r'"([^"]*)"', arr_match.group(1))
+                    result[std_name] = items
+                    break
+            if std_name not in result:
+                result[std_name] = []
+        
+        if "recommendation" in result:
+            # 规范化 recommendation 值
+            rec = result["recommendation"].lower()
+            if "buy" in rec or "买入" in rec:
+                result["recommendation"] = "buy"
+            elif "sell" in rec or "卖出" in rec:
+                result["recommendation"] = "sell"
+            else:
+                result["recommendation"] = "hold"
+            return result
+    except Exception:
+        pass
+    
+    return None
+
+
+def _normalize_ai_result(result: dict) -> Optional[dict]:
+    """规范化AI返回的字段名"""
+    # 映射可能的字段名变体
+    key_map = {
+        "recommend": "recommendation", "suggestion": "recommendation",
+        "action": "recommendation", "advice": "recommendation",
+        "reason": "reasoning", "analysis": "reasoning",
+        "ratio": "suggested_ratio", "position": "suggested_ratio",
+        "risk": "risk_level", "riskLevel": "risk_level",
+        "target": "target_price", "targetPrice": "target_price",
+    }
+    
+    normalized = {}
+    for k, v in result.items():
+        new_key = key_map.get(k, k)
+        normalized[new_key] = v
+    
+    if "recommendation" not in normalized:
+        return None
+    
+    # 规范化值
+    rec = str(normalized.get("recommendation", "")).lower()
+    if "buy" in rec or "买入" in rec:
+        normalized["recommendation"] = "buy"
+    elif "sell" in rec or "卖出" in rec:
+        normalized["recommendation"] = "sell"
+    else:
+        normalized["recommendation"] = "hold"
+    
+    # 确保 confidence 是浮点数
+    if "confidence" in normalized:
+        try:
+            normalized["confidence"] = float(normalized["confidence"])
+        except (ValueError, TypeError):
+            normalized["confidence"] = 0.5
+    
+    # 确保 target_price 是浮点数
+    if "target_price" in normalized:
+        try:
+            normalized["target_price"] = float(normalized["target_price"])
+        except (ValueError, TypeError):
+            normalized["target_price"] = None
+    
+    return normalized
 
 
 def analyze_stock(code: str, name: str, price: float, change_pct: float,
@@ -26,9 +241,8 @@ def analyze_stock(code: str, name: str, price: float, change_pct: float,
     """
     使用 AI 分析股票，给出买入/卖出/持有建议
     """
-    c = get_client()
-    if c is None:
-        return _advanced_technical_analysis(code, name, price, change_pct, history, market_indices)
+    # 先获取技术指标摘要
+    tech = _compute_indicators(history, price)
 
     # 构建最近走势摘要
     recent = history[-20:] if len(history) > 20 else history
@@ -40,9 +254,6 @@ def analyze_stock(code: str, name: str, price: float, change_pct: float,
     market_summary = "\n".join([
         f"{k}: {v['price']:.2f} (涨跌幅 {v['change_pct']:+.2f}%)" for k, v in market_indices.items()
     ]) if market_indices else "无市场指数数据"
-
-    # 先获取技术指标摘要
-    tech = _compute_indicators(history, price)
 
     prompt = f"""你是一个资深股票分析师，请从技术面、资金面、市场情绪多维度分析以下股票。
 
@@ -84,26 +295,37 @@ def analyze_stock(code: str, name: str, price: float, change_pct: float,
 
 只返回 JSON，不要包含其他内容。"""
 
-    try:
-        response = c.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=800,
-        )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-        ai_result = json.loads(content)
-        # 合并技术指标
-        ai_result["indicators"] = tech
-        ai_result["ai_available"] = True
-        return ai_result
-    except Exception as e:
-        print(f"AI 分析失败，回退技术分析: {e}")
-        return _advanced_technical_analysis(code, name, price, change_pct, history, market_indices)
+    # 尝试主模型（硅基千问）
+    response = _call_ai_api(prompt, use_fallback=False)
+    if not response:
+        # 尝试备用模型（DeepSeek）
+        response = _call_ai_api(prompt, use_fallback=True)
+    
+    if response:
+        try:
+            content = response.strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            import re
+            json_match = re.search(r"\{[\s\S]*\}", content)
+            if json_match:
+                json_str = json_match.group()
+                # 尝试修复常见JSON格式错误
+                ai_result = _safe_json_parse(json_str)
+                if ai_result:
+                    ai_result["indicators"] = tech
+                    ai_result["ai_available"] = True
+                    return ai_result
+            else:
+                print(f"AI 响应中未找到JSON: {response[:100]}")
+        except Exception as e:
+            print(f"AI 响应解析失败: {e}")
+    
+    # 降级到技术分析
+    print(f"AI 分析不可用，回退技术分析: {code}")
+    return _advanced_technical_analysis(code, name, price, change_pct, history, market_indices)
 
 
 def _compute_indicators(history: list[dict], price: float) -> dict:
@@ -389,15 +611,18 @@ def _advanced_technical_analysis(code: str, name: str, price: float, change_pct:
         confidence = min(0.95, 0.5 + total_score * 0.06)
         suggested_ratio = min(0.3, 0.05 + total_score * 0.03)
         risk_level = "low" if total_score >= 6 else "medium"
-        # 目标价：基于布林带上轨或近期高点
+        # 目标价：基于布林带上轨+1倍标准差，或近期高点+5%
         recent_high = max(d["high"] for d in history[-20:])
-        target_price = round(max(recent_high, tech["boll_upper"]), 2)
+        boll_target = tech["boll_upper"] * 1.02 if tech["boll_upper"] > price else tech["boll_upper"]
+        target_price = round(max(recent_high * 1.03, boll_target, price * 1.05), 2)
     elif total_score >= 0:
         recommendation = "hold"
         confidence = 0.4 + total_score * 0.05
         suggested_ratio = max(0.0, 0.05 + total_score * 0.01)
         risk_level = "medium"
-        target_price = None
+        # 持有也给出上行目标
+        recent_high = max(d["high"] for d in history[-20:])
+        target_price = round(max(recent_high, price * 1.03), 2) if recent_high > price else None
     elif total_score >= -3:
         recommendation = "hold"
         confidence = 0.3 - total_score * 0.03
@@ -411,7 +636,7 @@ def _advanced_technical_analysis(code: str, name: str, price: float, change_pct:
         risk_level = "high" if total_score <= -6 else "medium"
         # 下跌目标：基于布林带下轨或近期低点
         recent_low = min(d["low"] for d in history[-20:])
-        target_price = round(min(recent_low, tech["boll_lower"]), 2)
+        target_price = round(min(recent_low * 0.97, tech["boll_lower"], price * 0.93), 2)
 
     # 构建综合理由
     rec_label = {"buy": "买入", "sell": "卖出", "hold": "持有"}
@@ -447,4 +672,5 @@ def _advanced_technical_analysis(code: str, name: str, price: float, change_pct:
 
 
 def is_ai_available() -> bool:
-    return bool(API_KEY)
+    _load_api_keys()
+    return bool(SILICONFLOW_API_KEY) or bool(DEEPSEEK_API_KEY)

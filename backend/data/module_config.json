@@ -1,0 +1,10 @@
+{
+  "storage_path": "/Users/zhangdongsheng/Desktop/基金股票分析软件/backend/Data",
+  "blocked_keywords": [],
+  "auto_review_schedule": {"daily": true, "weekly": true, "monthly": true},
+  "ai_call_limit": {"daily": 100, "used": 0, "reset_date": "2026-06-26"},
+  "last_migration": null,
+  "version": "1.0.0",
+  "siliconflow_api_key": "sk-pzpblcwekjuzkcrrpphqhzurwiirbsvguuvdiziuwasqgpjb",
+  "deepseek_api_key": ""
+}
