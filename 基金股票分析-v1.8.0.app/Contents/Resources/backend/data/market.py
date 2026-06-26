@@ -14,7 +14,7 @@ _cache: dict = {}
 _cache_lock = threading.Lock()
 _fetch_events: dict = {}
 _CACHE_TTL = 120
-_FETCH_TIMEOUT = 30
+_FETCH_TIMEOUT = 60
 
 
 def _session():
@@ -222,16 +222,61 @@ _STOCK_ALIASES = {
 
 
 def _search_alias(keyword: str) -> list[dict]:
-    """通过别名映射搜索（解决名称截断问题）"""
+    """通过别名映射搜索（解决名称截断问题），不等待缓存"""
     results = []
     kw = keyword.strip().lower()
     if not kw:
         return results
+
+    hk_list = _cached("hk_spot", _fetch_hk_spot, ttl=180, wait=False)
+    stock_df = _cached("stock_spot", _fetch_stock_spot, wait=False)
+    etf_df = _cached("etf_spot", _fetch_etf_spot, wait=False)
+
     for alias, code in _STOCK_ALIASES.items():
-        if kw in alias.lower():
-            quote = get_stock_quote(code)
-            if quote:
-                results.append(quote)
+        if kw not in alias.lower():
+            continue
+        if code.startswith("hk"):
+            if not hk_list:
+                continue
+            hk_code = code[2:].zfill(5)
+            for item in hk_list:
+                if str(item.get("code", "")).zfill(5) == hk_code:
+                    results.append({
+                        "code": "hk" + hk_code,
+                        "name": str(item.get("name", "")),
+                        "price": float(item.get("price", 0)),
+                        "change": float(item.get("change", 0)),
+                        "change_pct": float(item.get("change_pct", 0)),
+                        "type": "stock_hk",
+                    })
+                    break
+        else:
+            found = False
+            if stock_df is not None and not stock_df.empty:
+                matched = stock_df[stock_df["代码"] == code]
+                if not matched.empty:
+                    row = matched.iloc[0]
+                    results.append({
+                        "code": code,
+                        "name": str(row["名称"]),
+                        "price": float(row["最新价"]),
+                        "change": float(row["涨跌额"]),
+                        "change_pct": float(row["涨跌幅"]),
+                        "type": "stock",
+                    })
+                    found = True
+            if not found and etf_df is not None and not etf_df.empty:
+                matched = etf_df[etf_df["代码"] == code]
+                if not matched.empty:
+                    row = matched.iloc[0]
+                    results.append({
+                        "code": code,
+                        "name": str(row["名称"]),
+                        "price": float(row["最新价"]),
+                        "change": float(row["涨跌额"]),
+                        "change_pct": float(row["涨跌幅"]),
+                        "type": "etf",
+                    })
     return results
 
 
@@ -945,7 +990,7 @@ def _fetch_index_spot() -> dict:
 # ========== 搜索 ==========
 
 def search_stock(keyword: str) -> list[dict]:
-    """搜索股票（A股 + 港股），支持别名匹配、拼音、代码等"""
+    """搜索股票（A股 + 港股），支持别名匹配、拼音、代码等，非阻塞优先"""
     results = []
     kw = keyword.strip()
     if not kw:
@@ -975,7 +1020,7 @@ def search_stock(keyword: str) -> list[dict]:
         print(f"搜索 A 股失败: {e}")
 
     try:
-        hk_list = _cached("hk_spot", _fetch_hk_spot, ttl=180, wait=True)
+        hk_list = _cached("hk_spot", _fetch_hk_spot, ttl=180, wait=False)
         if hk_list:
             for item in hk_list:
                 code = str(item.get("code", ""))

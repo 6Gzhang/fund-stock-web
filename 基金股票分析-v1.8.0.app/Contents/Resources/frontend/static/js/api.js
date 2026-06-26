@@ -152,4 +152,21 @@ const API = {
     async getDataStatus() {
         return this.get('/data-status');
     },
+
+    async chatSend(message, context = {}) {
+        return this.post('/chat/send', { message, context });
+    },
+
+    async chatStatus() {
+        try {
+            const result = await this.get('/chat/status');
+            return result || { status: 'idle', messages: [] };
+        } catch (e) {
+            return { status: 'idle', messages: [] };
+        }
+    },
+
+    async chatClear() {
+        return this.post('/chat/clear');
+    },
 };

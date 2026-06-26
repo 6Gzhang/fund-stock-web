@@ -123,6 +123,12 @@ def _safe_json_parse(json_str: str) -> Optional[dict]:
             "suggested_ratio": ["suggested_ratio", "ratio", "position", "仓位", "建议仓位"],
             "risk_level": ["risk_level", "risk", "riskLevel", "风险等级", "风险"],
             "target_price": ["target_price", "target", "targetPrice", "目标价", "目标价格"],
+            "buy_ratio": ["buy_ratio", "buyRatio", "add_ratio", "加仓率", "建议加仓", "加仓比例"],
+            "sell_ratio": ["sell_ratio", "sellRatio", "减仓率", "卖出率", "建议卖出", "卖出比例"],
+            "stop_loss_price": ["stop_loss_price", "stop_loss", "stopLoss", "止损价", "止损价格"],
+            "stop_profit_price": ["stop_profit_price", "stop_profit", "take_profit", "止盈价", "止盈价格"],
+            "key_support": ["key_support", "support", "支撑位", "关键支撑"],
+            "key_resistance": ["key_resistance", "resistance", "阻力位", "关键阻力", "压力位"],
         }
         
         for std_name, aliases in field_aliases.items():
@@ -155,6 +161,20 @@ def _safe_json_parse(json_str: str) -> Optional[dict]:
                             result[std_name] = "low"
                         else:
                             result[std_name] = "medium"
+                    elif std_name in ("buy_ratio", "sell_ratio"):
+                        try:
+                            fval = float(val)
+                            if fval > 1:
+                                result[std_name] = min(100.0, max(0.0, fval))
+                            else:
+                                result[std_name] = min(100.0, max(0.0, fval * 100))
+                        except ValueError:
+                            result[std_name] = 0.0
+                    elif std_name in ("stop_loss_price", "stop_profit_price", "key_support", "key_resistance"):
+                        try:
+                            result[std_name] = float(val)
+                        except ValueError:
+                            result[std_name] = None
                     else:
                         result[std_name] = val
                     break
@@ -163,6 +183,7 @@ def _safe_json_parse(json_str: str) -> Optional[dict]:
         arr_aliases = {
             "buy_reasons": ["buy_reasons", "buyReasons", "买入理由", "买入"],
             "sell_reasons": ["sell_reasons", "sellReasons", "卖出理由", "卖出", "风险提示"],
+            "warnings": ["warnings", "warning", "注意事项", "风险警告", "警示", "提醒"],
         }
         for std_name, aliases in arr_aliases.items():
             for alias in aliases:
@@ -200,6 +221,12 @@ def _normalize_ai_result(result: dict) -> Optional[dict]:
         "ratio": "suggested_ratio", "position": "suggested_ratio",
         "risk": "risk_level", "riskLevel": "risk_level",
         "target": "target_price", "targetPrice": "target_price",
+        "buyRatio": "buy_ratio", "add_ratio": "buy_ratio", "加仓率": "buy_ratio",
+        "sellRatio": "sell_ratio", "减仓率": "sell_ratio", "卖出率": "sell_ratio",
+        "stopLoss": "stop_loss_price", "stop_loss": "stop_loss_price", "止损价": "stop_loss_price",
+        "stopProfit": "stop_profit_price", "take_profit": "stop_profit_price", "止盈价": "stop_profit_price",
+        "support": "key_support", "支撑位": "key_support",
+        "resistance": "key_resistance", "阻力位": "key_resistance", "压力位": "key_resistance",
     }
     
     normalized = {}
@@ -288,10 +315,17 @@ def analyze_stock(code: str, name: str, price: float, change_pct: float,
   3) 市场环境分析（大盘走势对比）
   4) 综合结论与操作建议
 - suggested_ratio: 建议仓位占比（0-1之间）
+- buy_ratio: 建议加仓百分比（0-100，如果建议买入或持有，给出建议加仓比例；如果建议卖出，设为0）
+- sell_ratio: 建议卖出百分比（0-100，如果建议卖出或减仓，给出建议卖出比例；如果建议买入，设为0）
 - buy_reasons: 列出3-5条买入理由（如果推荐买入）或风险提示（如果推荐卖出/持有）
 - sell_reasons: 列出3-5条卖出理由或需要警惕的信号
 - risk_level: 风险等级，可选 "low"（低风险）/ "medium"（中风险）/ "high"（高风险）
 - target_price: 短期目标价格（如果是buy，给上涨目标；如果是sell，给下跌目标；hold给null）
+- stop_loss_price: 止损价格
+- stop_profit_price: 止盈价格
+- warnings: 列出3-5条需要重点注意的风险提示或注意事项
+- key_support: 关键支撑位价格
+- key_resistance: 关键阻力位价格
 
 只返回 JSON，不要包含其他内容。"""
 
@@ -315,6 +349,24 @@ def analyze_stock(code: str, name: str, price: float, change_pct: float,
                 # 尝试修复常见JSON格式错误
                 ai_result = _safe_json_parse(json_str)
                 if ai_result:
+                    # 获取技术分析结果作为基础
+                    tech_result = _advanced_technical_analysis(
+                        code, name, price, change_pct, history, market_indices
+                    )
+                    # 需要用技术分析兜底的字段（AI可能返回空或不正确的）
+                    fallback_fields = [
+                        "score_detail", "buy_reasons", "sell_reasons",
+                        "warnings", "indicators"
+                    ]
+                    # 合并：AI返回的字段优先，缺失的或关键兜底字段用技术分析填充
+                    for k, v in tech_result.items():
+                        is_missing = k not in ai_result or ai_result[k] is None or ai_result[k] == ""
+                        is_empty_list = isinstance(ai_result.get(k), list) and len(ai_result[k]) == 0
+                        is_empty_dict = isinstance(ai_result.get(k), dict) and len(ai_result[k]) == 0
+                        if k in ("indicators", "ai_available", "reasoning", "recommendation", "confidence", "target_price"):
+                            continue
+                        if is_missing or is_empty_list or is_empty_dict:
+                            ai_result[k] = v
                     ai_result["indicators"] = tech
                     ai_result["ai_available"] = True
                     return ai_result
@@ -606,37 +658,84 @@ def _advanced_technical_analysis(code: str, name: str, price: float, change_pct:
     # === 综合判断 ===
     total_score = buy_score - sell_score
 
+    # 计算关键支撑位和阻力位
+    recent_high_20 = max(d["high"] for d in history[-20:])
+    recent_low_20 = min(d["low"] for d in history[-20:])
+    key_support = round(min(tech["boll_lower"], recent_low_20 * 1.01, tech["ma20"] * 0.98), 2)
+    key_resistance = round(max(tech["boll_upper"], recent_high_20 * 0.99, tech["ma20"] * 1.02), 2)
+
+    # 构建注意事项
+    warnings = []
+    if tech["rsi"] > 70:
+        warnings.append("RSI超买(>70)，短期回调风险较高，注意控制仓位")
+    if tech["rsi"] < 30:
+        warnings.append("RSI超卖(<30)，可能存在技术性反弹，但需确认底部信号")
+    if tech["j"] > 100:
+        warnings.append("KDJ超买(J>100)，短期获利盘抛压较大")
+    if tech["j"] < 0:
+        warnings.append("KDJ超卖(J<0)，关注是否企稳反弹")
+    if price > tech["boll_upper"]:
+        warnings.append("价格突破布林带上轨，超买状态，注意回调风险")
+    if price < tech["boll_lower"]:
+        warnings.append("价格跌破布林带下轨，超跌状态，关注企稳信号")
+    if abs(change_pct) > 5:
+        warnings.append(f"今日波动较大({change_pct:+.2f}%)，注意情绪面影响")
+    if tech["vol_trend"] == "放量" and change_pct < 0:
+        warnings.append("放量下跌，资金流出明显，需警惕进一步下行")
+    if tech["vol_trend"] == "缩量" and change_pct > 0:
+        warnings.append("缩量上涨，量价背离，上行动力可能不足")
+    if len(warnings) < 3:
+        warnings.append("建议设置止盈止损，严格执行交易纪律")
+        warnings.append("关注大盘整体走势，系统性风险不可忽视")
+        warnings.append("以上分析仅供参考，不构成投资建议")
+
     if total_score >= 4:
         recommendation = "buy"
         confidence = min(0.95, 0.5 + total_score * 0.06)
         suggested_ratio = min(0.3, 0.05 + total_score * 0.03)
+        buy_ratio = min(80, 30 + total_score * 6)
+        sell_ratio = 0
         risk_level = "low" if total_score >= 6 else "medium"
         # 目标价：基于布林带上轨+1倍标准差，或近期高点+5%
-        recent_high = max(d["high"] for d in history[-20:])
+        recent_high = recent_high_20
         boll_target = tech["boll_upper"] * 1.02 if tech["boll_upper"] > price else tech["boll_upper"]
         target_price = round(max(recent_high * 1.03, boll_target, price * 1.05), 2)
+        stop_loss_price = round(key_support * 0.98, 2)
+        stop_profit_price = round(target_price * 0.97, 2)
     elif total_score >= 0:
         recommendation = "hold"
         confidence = 0.4 + total_score * 0.05
         suggested_ratio = max(0.0, 0.05 + total_score * 0.01)
+        buy_ratio = min(40, 10 + total_score * 5)
+        sell_ratio = max(0, 20 - total_score * 3)
         risk_level = "medium"
         # 持有也给出上行目标
-        recent_high = max(d["high"] for d in history[-20:])
+        recent_high = recent_high_20
         target_price = round(max(recent_high, price * 1.03), 2) if recent_high > price else None
+        stop_loss_price = round(key_support * 0.97, 2)
+        stop_profit_price = round(key_resistance * 0.98, 2) if key_resistance > price else None
     elif total_score >= -3:
         recommendation = "hold"
         confidence = 0.3 - total_score * 0.03
         suggested_ratio = 0.03
+        buy_ratio = 10
+        sell_ratio = min(50, 30 - total_score * 5)
         risk_level = "medium"
         target_price = None
+        stop_loss_price = round(key_support * 0.97, 2)
+        stop_profit_price = None
     else:
         recommendation = "sell"
         confidence = min(0.95, 0.5 - total_score * 0.06)
         suggested_ratio = 0.0
+        buy_ratio = 0
+        sell_ratio = min(100, 60 - total_score * 5)
         risk_level = "high" if total_score <= -6 else "medium"
         # 下跌目标：基于布林带下轨或近期低点
-        recent_low = min(d["low"] for d in history[-20:])
+        recent_low = recent_low_20
         target_price = round(min(recent_low * 0.97, tech["boll_lower"], price * 0.93), 2)
+        stop_loss_price = round(key_resistance * 1.02, 2)
+        stop_profit_price = round(target_price * 1.03, 2)
 
     # 构建综合理由
     rec_label = {"buy": "买入", "sell": "卖出", "hold": "持有"}
@@ -661,14 +760,75 @@ def _advanced_technical_analysis(code: str, name: str, price: float, change_pct:
         "confidence": round(confidence, 2),
         "reasoning": reasoning,
         "suggested_ratio": round(suggested_ratio, 2),
+        "buy_ratio": round(buy_ratio, 0),
+        "sell_ratio": round(sell_ratio, 0),
         "buy_reasons": buy_reasons[:5] if buy_reasons else ["暂无明确买入信号"],
         "sell_reasons": sell_reasons[:5] if sell_reasons else ["暂无明确卖出信号"],
         "risk_level": risk_level,
         "target_price": target_price,
+        "stop_loss_price": stop_loss_price,
+        "stop_profit_price": stop_profit_price,
+        "warnings": warnings[:5],
+        "key_support": key_support,
+        "key_resistance": key_resistance,
         "indicators": tech,
         "ai_available": False,
         "score_detail": {"buy_score": buy_score, "sell_score": sell_score, "net_score": total_score},
     }
+
+
+def chat_with_ai(system_prompt: str, user_message: str, history: list = None) -> str:
+    """
+    通用 AI 聊天接口
+
+    参数:
+        system_prompt: 系统提示词
+        user_message: 用户消息
+        history: 历史消息列表，每个元素是 {"role": "user"/"assistant", "content": "..."}
+
+    返回:
+        AI 回复的字符串，失败返回 None
+    """
+    _load_api_keys()
+
+    if not history:
+        history = []
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+
+    def _call(api_key, api_base, model):
+        if not api_key:
+            return None
+        try:
+            data = json.dumps({
+                "model": model,
+                "messages": messages,
+                "max_tokens": 2048,
+                "temperature": 0.7,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                api_base,
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return content
+        except Exception as e:
+            print(f"AI 聊天调用失败 ({model}): {e}")
+            return None
+
+    response = _call(SILICONFLOW_API_KEY, SILICONFLOW_API_BASE, SILICONFLOW_MODEL)
+    if not response:
+        response = _call(DEEPSEEK_API_KEY, DEEPSEEK_API_BASE, DEEPSEEK_MODEL)
+
+    return response
 
 
 def is_ai_available() -> bool:

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from data.market import get_stock_quote, get_fund_quote, get_stock_history, get_fund_history, get_market_index, search_stock, search_fund, _cached, _fetch_stock_spot, _fetch_etf_spot
 from data.ai import analyze_stock, is_ai_available, _advanced_technical_analysis, _compute_indicators
+from data.sector import get_sector_for_stock, get_sector_for_etf, get_all_sectors, get_sector_stocks
 import threading
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -41,6 +42,12 @@ async def analyze(code: str, category: str = Query("stock")):
         market_indices=market_indices,
     )
 
+    # 判断行业分类
+    if category in ("stock", "stock_hk"):
+        sectors = get_sector_for_stock(code, quote["name"])
+    else:
+        sectors = get_sector_for_etf(code, quote["name"])
+
     return {
         "code": code,
         "name": quote["name"],
@@ -50,13 +57,22 @@ async def analyze(code: str, category: str = Query("stock")):
         "confidence": result.get("confidence", 0.5),
         "reasoning": result.get("reasoning", result.get("reason", "")),
         "suggested_ratio": result.get("suggested_ratio", 0.0),
+        "buy_ratio": result.get("buy_ratio", 0),
+        "sell_ratio": result.get("sell_ratio", 0),
         "buy_reasons": result.get("buy_reasons", []),
         "sell_reasons": result.get("sell_reasons", []),
         "risk_level": result.get("risk_level", "medium"),
         "target_price": result.get("target_price"),
+        "stop_loss_price": result.get("stop_loss_price"),
+        "stop_profit_price": result.get("stop_profit_price"),
+        "warnings": result.get("warnings", []),
+        "key_support": result.get("key_support"),
+        "key_resistance": result.get("key_resistance"),
         "indicators": result.get("indicators", {}),
         "score_detail": result.get("score_detail", {}),
         "ai_available": result.get("ai_available", is_ai_available()),
+        "sectors": sectors,
+        "category": category,
     }
 
 
@@ -64,6 +80,19 @@ async def analyze(code: str, category: str = Query("stock")):
 async def status():
     """检查 AI 服务状态"""
     return {"ai_available": is_ai_available()}
+
+
+@router.get("/sectors")
+async def get_sectors():
+    """获取所有行业分类"""
+    return {"sectors": get_all_sectors()}
+
+
+@router.get("/sector/{sector_name}")
+async def get_sector_data(sector_name: str):
+    """获取某行业的股票列表"""
+    stocks = get_sector_stocks(sector_name)
+    return {"sector": sector_name, "stocks": stocks}
 
 
 @router.get("/recommendations/progress")

@@ -2,15 +2,30 @@
 const Charts = {
     chart: null,
     currentPeriod: 90,
+    _initialized: false,
 
     init() {
         const dom = document.getElementById('mainChart');
         if (!dom) return;
         this.chart = echarts.init(dom, 'dark');
+        this._initialized = true;
         window.addEventListener('resize', () => this.chart?.resize());
     },
 
+    ensureInit() {
+        if (!this._initialized || !this.chart) {
+            this.init();
+        }
+    },
+
+    resize() {
+        if (this.chart) {
+            this.chart.resize();
+        }
+    },
+
     async loadChart(code, category, period = 90) {
+        this.ensureInit();
         this.currentPeriod = period;
         try {
             const data = await API.getHistory(code, category, period);
@@ -19,6 +34,8 @@ const Charts = {
                 return;
             }
             this.renderCandlestick(data.history);
+            // 确保渲染后resize一次，解决容器隐藏后显示的尺寸问题
+            setTimeout(() => this.resize(), 50);
         } catch (e) {
             this.showEmpty('加载图表失败: ' + e.message);
         }

@@ -7,6 +7,8 @@ const App = {
     recommendType: 'all',
     recommendRiskTier: 'all',
     recommendPollTimer: null,
+    chatMessages: [],
+    isChatLoading: false,
 
     init() {
         Charts.init();
@@ -117,6 +119,27 @@ const App = {
 
         const versionText = document.getElementById('versionText');
         if (versionText) versionText.addEventListener('click', () => this.checkVersion(true));
+
+        const chatSendBtn = document.getElementById('chatSendBtn');
+        const chatInput = document.getElementById('chatInput');
+        const chatClearBtn = document.getElementById('chatClearBtn');
+
+        if (chatSendBtn) {
+            chatSendBtn.addEventListener('click', () => this.sendChatMessage());
+        }
+
+        if (chatInput) {
+            chatInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendChatMessage();
+                }
+            });
+        }
+
+        if (chatClearBtn) {
+            chatClearBtn.addEventListener('click', () => this.clearChatHistory());
+        }
     },
 
     switchTab(tabName) {
@@ -130,6 +153,9 @@ const App = {
         }
         if (tabName === 'market') {
             setTimeout(() => Charts.resize(), 100);
+        }
+        if (tabName === 'chat') {
+            this.updateChatContext();
         }
     },
 
@@ -204,6 +230,7 @@ const App = {
             this.loadQuote(code, type);
             Charts.loadChart(code, type, 30);
             this.loadAnalysis(code, type);
+            this.updateChatContext();
         }, 100);
     },
 
@@ -341,6 +368,14 @@ const App = {
             const sellPct = (sellScore / total) * 100;
 
             const indicators = result.indicators || {};
+            const buyRatio = result.buy_ratio !== undefined ? result.buy_ratio : 0;
+            const sellRatio = result.sell_ratio !== undefined ? result.sell_ratio : 0;
+            const warnings = result.warnings || [];
+            const keySupport = result.key_support || [];
+            const keyResistance = result.key_resistance || [];
+            const stopLossPrice = result.stop_loss_price;
+            const stopProfitPrice = result.stop_profit_price;
+            const sectors = result.sectors || [];
 
             aiCard.innerHTML = `
                 <div class="ai-header">
@@ -362,6 +397,34 @@ const App = {
                     </div>
                     ` : ''}
 
+                    ${sectors.length > 0 ? `
+                    <div class="ai-sectors">
+                        <span class="ai-sectors-label">所属行业：</span>
+                        ${sectors.map(s => `<span class="ai-sector-tag">${s}</span>`).join('')}
+                    </div>
+                    ` : ''}
+
+                    <div class="ai-buy-sell-ratios">
+                        <div class="ai-ratio-item">
+                            <div class="ai-ratio-label">
+                                <span>建议加仓率</span>
+                                <span class="ai-ratio-value">${(buyRatio * 100).toFixed(0)}%</span>
+                            </div>
+                            <div class="ai-ratio-bar">
+                                <div class="ai-ratio-fill buy" style="width: ${Math.min(100, buyRatio * 100)}%"></div>
+                            </div>
+                        </div>
+                        <div class="ai-ratio-item">
+                            <div class="ai-ratio-label">
+                                <span>建议卖出率</span>
+                                <span class="ai-ratio-value">${(sellRatio * 100).toFixed(0)}%</span>
+                            </div>
+                            <div class="ai-ratio-bar">
+                                <div class="ai-ratio-fill sell" style="width: ${Math.min(100, sellRatio * 100)}%"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="score-bar-container">
                         <div class="score-bar-title">
                             <span>多空评分</span>
@@ -371,6 +434,57 @@ const App = {
                             <div class="score-buy" style="width: ${buyPct}%"></div>
                             <div class="score-sell" style="width: ${sellPct}%"></div>
                         </div>
+                    </div>
+
+                    ${warnings.length > 0 ? `
+                    <div class="ai-warnings">
+                        <div class="ai-warnings-title">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                                <line x1="12" y1="9" x2="12" y2="13"></line>
+                                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                            </svg>
+                            注意事项
+                        </div>
+                        <ul class="ai-warnings-list">
+                            ${warnings.map(w => `<li>${w}</li>`).join('')}
+                        </ul>
+                    </div>
+                    ` : ''}
+
+                    <div class="ai-price-levels">
+                        ${keySupport.length > 0 ? `
+                        <div class="ai-price-level-item">
+                            <div class="ai-price-level-label">关键支撑位</div>
+                            <div class="ai-price-level-values">
+                                ${keySupport.map(p => `<span class="ai-price-tag support">${p.toFixed(2)}</span>`).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+                        ${keyResistance.length > 0 ? `
+                        <div class="ai-price-level-item">
+                            <div class="ai-price-level-label">关键阻力位</div>
+                            <div class="ai-price-level-values">
+                                ${keyResistance.map(p => `<span class="ai-price-tag resistance">${p.toFixed(2)}</span>`).join('')}
+                            </div>
+                        </div>
+                        ` : ''}
+                        ${stopLossPrice !== undefined ? `
+                        <div class="ai-price-level-item">
+                            <div class="ai-price-level-label">止损价</div>
+                            <div class="ai-price-level-values">
+                                <span class="ai-price-tag stop-loss">${stopLossPrice.toFixed(2)}</span>
+                            </div>
+                        </div>
+                        ` : ''}
+                        ${stopProfitPrice !== undefined ? `
+                        <div class="ai-price-level-item">
+                            <div class="ai-price-level-label">止盈价</div>
+                            <div class="ai-price-level-values">
+                                <span class="ai-price-tag stop-profit">${stopProfitPrice.toFixed(2)}</span>
+                            </div>
+                        </div>
+                        ` : ''}
                     </div>
 
                     <div class="indicators-panel">
@@ -937,6 +1051,148 @@ const App = {
         toast.textContent = message;
         container.appendChild(toast);
         setTimeout(() => toast.remove(), 3000);
+    },
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    },
+
+    formatMessage(text) {
+        let html = this.escapeHtml(text);
+        html = html.replace(/\n/g, '<br>');
+        html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+            return `<pre class="chat-code-block"><code>${code.trim()}</code></pre>`;
+        });
+        html = html.replace(/`([^`]+)`/g, (match, code) => {
+            return `<code class="chat-inline-code">${code}</code>`;
+        });
+        return html;
+    },
+
+    async sendChatMessage() {
+        const chatInput = document.getElementById('chatInput');
+        const message = chatInput.value.trim();
+
+        if (!message) {
+            this.showToast('请输入消息内容', 'warning');
+            return;
+        }
+
+        if (this.isChatLoading) {
+            return;
+        }
+
+        this.isChatLoading = true;
+        this.chatMessages.push({ role: 'user', content: message });
+        chatInput.value = '';
+        this.renderChatMessages();
+
+        try {
+            const context = this.currentStock ? {
+                code: this.currentStock.code,
+                name: this.currentStock.name,
+                type: this.currentStock.type,
+            } : {};
+
+            const response = await API.chatSend(message, context);
+            if (response && response.reply) {
+                this.chatMessages.push({ role: 'assistant', content: response.reply });
+            } else {
+                this.chatMessages.push({ role: 'assistant', content: '抱歉，AI 暂时无法回复，请稍后再试。' });
+            }
+        } catch (e) {
+            this.chatMessages.push({ role: 'assistant', content: `发送失败：${e.message}` });
+        } finally {
+            this.isChatLoading = false;
+            this.renderChatMessages();
+        }
+    },
+
+    renderChatMessages() {
+        const chatMessagesEl = document.getElementById('chatMessages');
+        if (!chatMessagesEl) return;
+
+        if (this.chatMessages.length === 0) {
+            chatMessagesEl.innerHTML = `
+                <div class="chat-placeholder">
+                    <div class="chat-placeholder-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                    </div>
+                    <h3>AI 智能助手</h3>
+                    <p>选择一只股票或基金后，开始与 AI 对话</p>
+                    <p class="chat-tip">支持技术分析、投资建议、行业研究等问题</p>
+                </div>
+            `;
+            return;
+        }
+
+        chatMessagesEl.innerHTML = this.chatMessages.map((msg, idx) => {
+            const isUser = msg.role === 'user';
+            const isLoading = idx === this.chatMessages.length - 1 && this.isChatLoading && !isUser;
+            return `
+                <div class="chat-message ${isUser ? 'user' : 'assistant'}">
+                    <div class="chat-message-avatar">
+                        ${isUser ? '👤' : '🤖'}
+                    </div>
+                    <div class="chat-message-content">
+                        ${isLoading ? '<div class="chat-typing"><span></span><span></span><span></span></div>' : this.formatMessage(msg.content)}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (this.isChatLoading) {
+            const loadingMsg = document.createElement('div');
+            loadingMsg.className = 'chat-message assistant';
+            loadingMsg.innerHTML = `
+                <div class="chat-message-avatar">🤖</div>
+                <div class="chat-message-content">
+                    <div class="chat-typing"><span></span><span></span><span></span></div>
+                </div>
+            `;
+            chatMessagesEl.appendChild(loadingMsg);
+        }
+
+        chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    },
+
+    updateChatContext() {
+        const contextEl = document.getElementById('chatContext');
+        if (!contextEl) return;
+
+        if (!this.currentStock) {
+            contextEl.innerHTML = '<div class="chat-context-empty">暂无选中标的</div>';
+            return;
+        }
+
+        const typeLabels = { stock: '股票', etf: 'ETF', fund: '基金', stock_hk: '港股' };
+        const stock = this.currentStock;
+
+        contextEl.innerHTML = `
+            <div class="chat-context-item">
+                <div class="chat-context-name">${stock.name}</div>
+                <div class="chat-context-code">${stock.code}</div>
+                <span class="chat-context-type type-${stock.type}">${typeLabels[stock.type] || stock.type}</span>
+            </div>
+            <div class="chat-context-tip">
+                AI 将基于此标的信息进行分析回答
+            </div>
+        `;
+    },
+
+    async clearChatHistory() {
+        try {
+            await API.chatClear();
+        } catch (e) {
+            // ignore
+        }
+        this.chatMessages = [];
+        this.renderChatMessages();
+        this.showToast('聊天记录已清除', 'success');
     },
 };
 

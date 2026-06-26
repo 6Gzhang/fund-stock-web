@@ -17,7 +17,7 @@ from modules.startup_checker import run_startup_check, ensure_ai_fallback, init_
 from modules.db_manager import init_module_db
 from modules.sim_executor import init_module as init_sim
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 VERSION_URL = "https://api.github.com/repos/6Gzhang/fund-stock-web/releases/latest"
 RELEASE_URL = "https://github.com/6Gzhang/fund-stock-web/releases/latest"
 
@@ -45,6 +45,12 @@ app.include_router(market_router)
 app.include_router(trade_router)
 app.include_router(analysis_router)
 app.include_router(modules_router)
+
+try:
+    from routes.chat import router as chat_router
+    app.include_router(chat_router)
+except Exception as e:
+    print(f"加载chat路由失败: {e}")
 
 # 静态文件
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
