@@ -1,5 +1,5 @@
 """
-市场数据获取模块 - 多数据源冗余（新浪主 + 腾讯备 + AKShare兜底）
+市场数据获取模块 - 东方财富主数据源（名称完整）+ 新浪备用
 """
 import akshare as ak
 import pandas as pd
@@ -23,7 +23,7 @@ def _session():
     return s
 
 
-def _cached(key: str, fetcher, ttl: int = _CACHE_TTL, wait: bool = True):
+def _cached(key: str, fetcher, ttl: int = _CACHE_TTL):
     """通用缓存装饰器（线程安全，避免重复拉取，超时快速失败）"""
     now = time.time()
     with _cache_lock:
@@ -33,13 +33,9 @@ def _cached(key: str, fetcher, ttl: int = _CACHE_TTL, wait: bool = True):
                 return data
     with _cache_lock:
         if key in _fetch_events:
-            if not wait:
-                return None if "hk" in key else pd.DataFrame()
             event = _fetch_events[key]
             is_my_event = False
         else:
-            if not wait:
-                return None if "hk" in key else pd.DataFrame()
             event = threading.Event()
             _fetch_events[key] = event
             is_my_event = True
@@ -138,6 +134,7 @@ _STOCK_ALIASES = {
     "建设银行": "601939",
     "农业银行": "601288",
     "中国银行": "601988",
+    "贵州茅台": "600519",
     "中国石油": "601857",
     "中国石化": "600028",
     "格力电器": "000651",
@@ -213,13 +210,11 @@ _STOCK_ALIASES = {
     "中国移动": "600941",
     "中国联通": "600050",
     "中国电信": "601728",
-    "平安银行": "000001",
     "港股腾讯": "hk00700",
     "港股阿里": "hk09988",
     "港股小米": "hk01810",
     "港股美团": "hk03690",
 }
-
 
 def _search_alias(keyword: str) -> list[dict]:
     """通过别名映射搜索（解决名称截断问题）"""
@@ -235,59 +230,7 @@ def _search_alias(keyword: str) -> list[dict]:
     return results
 
 
-# ========== 新浪行情列表（A股/ETF主数据源） ==========
-
-def _fetch_sina_list(node: str, max_pages: int = 80) -> list[dict]:
-    """新浪行情列表通用拉取"""
-    session = _session()
-    headers = {"Referer": "https://finance.sina.com.cn"}
-    url = "http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-    all_data = []
-
-    def _fetch_page(pn):
-        params = {
-            'page': pn, 'num': 80, 'sort': 'symbol', 'asc': 1,
-            'node': node, 'symbol': '', '_s_r_a': 'init'
-        }
-        try:
-            r = session.get(url, params=params, headers=headers, timeout=15)
-            data = r.json()
-            if isinstance(data, list) and len(data) > 0:
-                first = data[0]
-                if first.get('code') == 's_auth' or first.get('name') == 'FAILED':
-                    return []
-                return data
-        except Exception:
-            pass
-        return []
-
-    try:
-        first_page = _fetch_page(1)
-        if not first_page:
-            return []
-        all_data.extend(first_page)
-
-        total = max_pages * 80
-        pages = min(max_pages, 80)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(_fetch_page, p): p for p in range(2, pages + 1)}
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    data = future.result()
-                    if data:
-                        all_data.extend(data)
-                    else:
-                        break
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"新浪列表拉取失败 ({node}): {e}")
-
-    return all_data
-
-
-# ========== 东方财富通用拉取（备用数据源） ==========
+# ========== 东方财富通用拉取 ==========
 
 def _fetch_em_list(fs: str, fields: str = None) -> list[dict]:
     """东方财富行情列表通用拉取（并发分页）"""
@@ -306,7 +249,7 @@ def _fetch_em_list(fs: str, fields: str = None) -> list[dict]:
             "_": int(time.time() * 1000),
         }
         try:
-            r = session.get(url, params=params, timeout=10)
+            r = session.get(url, params=params, timeout=15)
             data = r.json()
             if data.get("data") and data["data"].get("diff"):
                 return data["data"]["diff"]
@@ -316,8 +259,6 @@ def _fetch_em_list(fs: str, fields: str = None) -> list[dict]:
 
     try:
         first_page = _fetch_page(1)
-        if not first_page:
-            return []
         all_data.extend(first_page)
 
         total = 3000
@@ -329,7 +270,7 @@ def _fetch_em_list(fs: str, fields: str = None) -> list[dict]:
                 "fs": fs, "fields": fields,
                 "_": int(time.time() * 1000),
             }
-            r = session.get(url, params=params_count, timeout=8)
+            r = session.get(url, params=params_count, timeout=10)
             d = r.json()
             total = d.get("data", {}).get("total", 3000)
         except Exception:
@@ -351,59 +292,10 @@ def _fetch_em_list(fs: str, fields: str = None) -> list[dict]:
     return all_data
 
 
-# ========== A 股数据（新浪主 + 东方财富备 + AKShare兜底） ==========
+# ========== A 股数据（东方财富，名称完整） ==========
 
-def _fetch_stock_spot_sina() -> pd.DataFrame:
-    """全量A股实时行情（新浪数据源）"""
-    raw = _fetch_sina_list("hs_a", max_pages=70)
-
-    rows = []
-    seen = set()
-    for item in raw:
-        try:
-            code = str(item.get("code", "")).zfill(6)
-            if code in seen or not code or len(code) != 6:
-                continue
-            seen.add(code)
-
-            name = str(item.get("name", ""))
-            price = float(item.get("trade", 0) or 0)
-            change_pct = float(item.get("changepercent", 0) or 0)
-            change = float(item.get("pricechange", 0) or 0)
-            volume = float(item.get("volume", 0) or 0)
-            amount = float(item.get("amount", 0) or 0)
-            high = float(item.get("high", 0) or 0)
-            low = float(item.get("low", 0) or 0)
-            open_price = float(item.get("open", 0) or 0)
-            pre_close = float(item.get("settlement", 0) or 0)
-
-            if price <= 0:
-                price = pre_close
-
-            fixed_name = _fix_stock_name(code, name)
-            rows.append({
-                "代码": code,
-                "名称": fixed_name,
-                "名称_original": name,
-                "名称_clean": _clean_stock_name(name),
-                "最新价": price,
-                "涨跌额": change,
-                "涨跌幅": change_pct,
-                "今开": open_price,
-                "最高": high,
-                "最低": low,
-                "昨收": pre_close,
-                "成交量": volume,
-                "成交额": amount,
-            })
-        except (ValueError, TypeError):
-            continue
-
-    return pd.DataFrame(rows)
-
-
-def _fetch_stock_spot_em() -> pd.DataFrame:
-    """全量A股实时行情（东方财富备用）"""
+def _fetch_stock_spot() -> pd.DataFrame:
+    """全量A股实时行情（东方财富数据源，名称完整，约5500只）"""
     fs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
     raw = _fetch_em_list(fs)
 
@@ -452,143 +344,25 @@ def _fetch_stock_spot_em() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _fetch_stock_spot() -> pd.DataFrame:
-    """全量A股实时行情（多数据源冗余）"""
-    print("正在获取A股数据...")
-
-    df = _fetch_stock_spot_sina()
-    if df is not None and not df.empty and len(df) > 1000:
-        print(f"新浪数据源成功，共 {len(df)} 只A股")
-        return df
-
-    print("新浪数据源失败，尝试东方财富...")
-    df = _fetch_stock_spot_em()
-    if df is not None and not df.empty and len(df) > 1000:
-        print(f"东方财富数据源成功，共 {len(df)} 只A股")
-        return df
-
-    print("东方财富数据源失败，尝试AKShare兜底...")
-    try:
-        df = ak.stock_zh_a_spot_em()
-        if df is not None and not df.empty:
-            rows = []
-            for _, row in df.iterrows():
-                try:
-                    code = str(row.get("代码", "")).zfill(6)
-                    name = str(row.get("名称", ""))
-                    price = float(row.get("最新价", 0) or 0)
-                    change_pct = float(row.get("涨跌幅", 0) or 0)
-                    change = float(row.get("涨跌额", 0) or 0)
-                    volume = float(row.get("成交量", 0) or 0)
-                    amount = float(row.get("成交额", 0) or 0)
-                    high = float(row.get("最高", 0) or 0)
-                    low = float(row.get("最低", 0) or 0)
-                    open_price = float(row.get("今开", 0) or 0)
-                    pre_close = float(row.get("昨收", 0) or 0)
-
-                    if price <= 0:
-                        price = pre_close
-
-                    fixed_name = _fix_stock_name(code, name)
-                    rows.append({
-                        "代码": code,
-                        "名称": fixed_name,
-                        "名称_original": name,
-                        "名称_clean": _clean_stock_name(name),
-                        "最新价": price,
-                        "涨跌额": change,
-                        "涨跌幅": change_pct,
-                        "今开": open_price,
-                        "最高": high,
-                        "最低": low,
-                        "昨收": pre_close,
-                        "成交量": volume,
-                        "成交额": amount,
-                    })
-                except (ValueError, TypeError):
-                    continue
-            result = pd.DataFrame(rows)
-            print(f"AKShare兜底成功，共 {len(result)} 只A股")
-            return result
-    except Exception as e:
-        print(f"AKShare也失败: {e}")
-
-    print("所有A股数据源都失败了！")
-    return pd.DataFrame()
-
-
-# ========== 港股数据（AKShare腾讯主 + 新浪单股备 + 别名兜底） ==========
+# ========== 港股数据（东方财富，全量正股） ==========
 
 def _is_hk_stock(code: str, name: str) -> bool:
     """判断是否为港股正股（过滤权证、衍生品等）"""
     code = str(code).zfill(5)
     name = str(name)
+    # 权证/衍生品特征关键词
     bad_patterns = ['购', '沽', '牛', '熊', '权证', 'N28', 'B27', 'N26', 'B26']
     for p in bad_patterns:
         if p in name:
             return False
+    # 8开头多为权证/衍生品
     if code.startswith('8'):
         return False
     return True
 
 
-def _fetch_hk_spot_ak_tencent() -> list[dict]:
-    """全量港股实时行情（AKShare腾讯数据源 - 主数据源）"""
-    try:
-        df = ak.stock_hk_spot()
-        if df is None or df.empty:
-            return []
-        results = []
-        seen = set()
-        for _, row in df.iterrows():
-            try:
-                code = str(row.get("代码", "")).zfill(5)
-                name = str(row.get("中文名称", ""))
-                if code in seen or not code:
-                    continue
-                if not _is_hk_stock(code, name):
-                    continue
-                seen.add(code)
-
-                price = float(row.get("最新价", 0) or 0)
-                change = float(row.get("涨跌额", 0) or 0)
-                change_pct = float(row.get("涨跌幅", 0) or 0)
-                volume = float(row.get("成交量", 0) or 0)
-                amount = float(row.get("成交额", 0) or 0)
-                high = float(row.get("最高", 0) or 0)
-                low = float(row.get("最低", 0) or 0)
-                open_price = float(row.get("今开", 0) or 0)
-                pre_close = float(row.get("昨收", 0) or 0)
-
-                if price <= 0:
-                    price = pre_close
-
-                fixed_name = _fix_stock_name("hk" + code, name)
-                results.append({
-                    "code": code,
-                    "name": fixed_name,
-                    "name_original": name,
-                    "name_clean": _clean_stock_name(name),
-                    "price": price,
-                    "change": change,
-                    "change_pct": change_pct,
-                    "open": open_price,
-                    "high": high,
-                    "low": low,
-                    "pre_close": pre_close,
-                    "volume": volume,
-                    "amount": amount,
-                })
-            except (ValueError, TypeError):
-                continue
-        return results
-    except Exception as e:
-        print(f"AKShare腾讯港股失败: {e}")
-        return []
-
-
-def _fetch_hk_spot_em() -> list[dict]:
-    """全量港股实时行情（东方财富备用）"""
+def _fetch_hk_spot() -> list[dict]:
+    """全量港股实时行情（东方财富，过滤后约2500只正股）"""
     fs = "m:128+t:3,m:128+t:4,m:128+t:1,m:128+t:2"
     raw = _fetch_em_list(fs)
 
@@ -639,154 +413,9 @@ def _fetch_hk_spot_em() -> list[dict]:
     return results
 
 
-def _fetch_hk_spot_from_aliases() -> list[dict]:
-    """从别名映射中构建港股列表（最小可用方案）"""
-    results = []
-    seen = set()
-    session = _session()
-    headers = {"Referer": "https://finance.sina.com.cn"}
+# ========== ETF 数据 ==========
 
-    hk_codes = []
-    for alias, code in _STOCK_ALIASES.items():
-        if code.startswith("hk") and code not in seen:
-            seen.add(code)
-            hk_codes.append(code)
-
-    if not hk_codes:
-        return []
-
-    try:
-        symbols = ",".join(hk_codes)
-        url = f"http://hq.sinajs.cn/list={symbols}"
-        r = session.get(url, headers=headers, timeout=10)
-        text = r.text
-
-        for line in text.strip().split("\n"):
-            if not line.strip() or "=" not in line:
-                continue
-            try:
-                var_name, var_value = line.split("=", 1)
-                full_code = var_name.split("hq_str_")[-1]
-                var_value = var_value.strip('"; ')
-                fields = var_value.split(",")
-                if len(fields) < 6:
-                    continue
-
-                code = full_code.replace("hk", "").zfill(5)
-                name_en = fields[0] if len(fields) > 0 else ""
-                name_cn = fields[1] if len(fields) > 1 else ""
-                name = name_cn if name_cn else name_en
-
-                price = float(fields[6]) if len(fields) > 6 else 0
-                pre_close = float(fields[3]) if len(fields) > 3 else 0
-                change = float(fields[7]) if len(fields) > 7 else 0
-                change_pct = float(fields[8]) if len(fields) > 8 else 0
-                high = float(fields[5]) if len(fields) > 5 else 0
-                low = float(fields[4]) if len(fields) > 4 else 0
-                open_price = float(fields[2]) if len(fields) > 2 else 0
-                volume = float(fields[12]) if len(fields) > 12 else 0
-                amount = float(fields[11]) if len(fields) > 11 else 0
-
-                if price <= 0:
-                    price = pre_close
-
-                fixed_name = _fix_stock_name("hk" + code, name)
-                results.append({
-                    "code": code,
-                    "name": fixed_name,
-                    "name_original": name,
-                    "name_clean": _clean_stock_name(name),
-                    "price": price,
-                    "change": change,
-                    "change_pct": change_pct,
-                    "open": open_price,
-                    "high": high,
-                    "low": low,
-                    "pre_close": pre_close,
-                    "volume": volume,
-                    "amount": amount,
-                })
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"从别名构建港股列表失败: {e}")
-
-    return results
-
-
-def _fetch_hk_spot() -> list[dict]:
-    """全量港股实时行情（多数据源冗余）"""
-    print("正在获取港股数据...")
-
-    hk_list = _fetch_hk_spot_ak_tencent()
-    if hk_list and len(hk_list) > 100:
-        print(f"AKShare腾讯港股成功，共 {len(hk_list)} 只")
-        return hk_list
-
-    print("AKShare腾讯港股失败，尝试东方财富...")
-    hk_list = _fetch_hk_spot_em()
-    if hk_list and len(hk_list) > 100:
-        print(f"东方财富港股成功，共 {len(hk_list)} 只")
-        return hk_list
-
-    print("东方财富港股也失败，使用别名最小集...")
-    hk_list = _fetch_hk_spot_from_aliases()
-    print(f"别名最小集，共 {len(hk_list)} 只")
-    return hk_list
-
-
-# ========== ETF 数据（新浪 + 东方财富 + AKShare） ==========
-
-def _fetch_etf_spot_sina() -> pd.DataFrame:
-    """ETF实时行情（新浪）"""
-    raw = _fetch_sina_list("etf_hq_fund", max_pages=20)
-
-    rows = []
-    seen = set()
-    for item in raw:
-        try:
-            code = str(item.get("code", ""))
-            if code in seen or not code:
-                continue
-            seen.add(code)
-
-            name = str(item.get("name", ""))
-            price = float(item.get("trade", 0) or 0)
-            change_pct = float(item.get("changepercent", 0) or 0)
-            change = float(item.get("pricechange", 0) or 0)
-            volume = float(item.get("volume", 0) or 0)
-            amount = float(item.get("amount", 0) or 0)
-            high = float(item.get("high", 0) or 0)
-            low = float(item.get("low", 0) or 0)
-            open_price = float(item.get("open", 0) or 0)
-            pre_close = float(item.get("settlement", 0) or 0)
-
-            if price <= 0:
-                price = pre_close
-
-            fixed_name = _fix_stock_name(code, name)
-            rows.append({
-                "代码": code,
-                "名称": fixed_name,
-                "名称_original": name,
-                "名称_clean": _clean_stock_name(name),
-                "最新价": price,
-                "涨跌额": change,
-                "涨跌幅": change_pct,
-                "今开": open_price,
-                "最高": high,
-                "最低": low,
-                "昨收": pre_close,
-                "成交量": volume,
-                "成交额": amount,
-            })
-        except (ValueError, TypeError):
-            continue
-
-    return pd.DataFrame(rows)
-
-
-def _fetch_etf_spot_em() -> pd.DataFrame:
+def _fetch_etf_spot() -> pd.DataFrame:
     """ETF实时行情（东方财富）"""
     fs = "b:MK0021,b:MK0022,b:MK0023,b:MK0024"
     raw = _fetch_em_list(fs)
@@ -834,71 +463,6 @@ def _fetch_etf_spot_em() -> pd.DataFrame:
             continue
 
     return pd.DataFrame(rows)
-
-
-def _fetch_etf_spot() -> pd.DataFrame:
-    """ETF实时行情（多数据源冗余）"""
-    print("正在获取ETF数据...")
-
-    df = _fetch_etf_spot_sina()
-    if df is not None and not df.empty and len(df) > 50:
-        print(f"新浪ETF成功，共 {len(df)} 只")
-        return df
-
-    print("新浪ETF失败，尝试东方财富...")
-    df = _fetch_etf_spot_em()
-    if df is not None and not df.empty and len(df) > 50:
-        print(f"东方财富ETF成功，共 {len(df)} 只")
-        return df
-
-    print("东方财富ETF失败，尝试AKShare...")
-    try:
-        df = ak.fund_etf_spot_em()
-        if df is not None and not df.empty:
-            rows = []
-            for _, row in df.iterrows():
-                try:
-                    code = str(row.get("代码", ""))
-                    name = str(row.get("名称", ""))
-                    price = float(row.get("最新价", 0) or 0)
-                    change_pct = float(row.get("涨跌幅", 0) or 0)
-                    change = float(row.get("涨跌额", 0) or 0)
-                    volume = float(row.get("成交量", 0) or 0)
-                    amount = float(row.get("成交额", 0) or 0)
-                    high = float(row.get("最高", 0) or 0)
-                    low = float(row.get("最低", 0) or 0)
-                    open_price = float(row.get("开盘价", 0) or 0)
-                    pre_close = float(row.get("昨收", 0) or 0)
-
-                    if price <= 0:
-                        price = pre_close
-
-                    fixed_name = _fix_stock_name(code, name)
-                    rows.append({
-                        "代码": code,
-                        "名称": fixed_name,
-                        "名称_original": name,
-                        "名称_clean": _clean_stock_name(name),
-                        "最新价": price,
-                        "涨跌额": change,
-                        "涨跌幅": change_pct,
-                        "今开": open_price,
-                        "最高": high,
-                        "最低": low,
-                        "昨收": pre_close,
-                        "成交量": volume,
-                        "成交额": amount,
-                    })
-                except (ValueError, TypeError):
-                    continue
-            result = pd.DataFrame(rows)
-            print(f"AKShare ETF成功，共 {len(result)} 只")
-            return result
-    except Exception as e:
-        print(f"AKShare ETF失败: {e}")
-
-    print("所有ETF数据源都失败了！")
-    return pd.DataFrame()
 
 
 # ========== 指数数据 ==========
@@ -953,7 +517,7 @@ def search_stock(keyword: str) -> list[dict]:
     kw_lower = kw.lower()
 
     try:
-        df = _cached("stock_spot", _fetch_stock_spot, wait=True)
+        df = _cached("stock_spot", _fetch_stock_spot)
         if df is not None and not df.empty and "名称_clean" in df.columns:
             mask = (
                 df["名称"].str.contains(kw, na=False, case=False) |
@@ -975,7 +539,7 @@ def search_stock(keyword: str) -> list[dict]:
         print(f"搜索 A 股失败: {e}")
 
     try:
-        hk_list = _cached("hk_spot", _fetch_hk_spot, ttl=180, wait=True)
+        hk_list = _cached("hk_spot", _fetch_hk_spot, ttl=180)
         if hk_list:
             for item in hk_list:
                 code = str(item.get("code", ""))
@@ -1054,138 +618,41 @@ def get_stock_quote(code: str) -> Optional[dict]:
                         }
         except Exception as e:
             print(f"获取港股行情失败: {e}")
-
-        try:
-            session = _session()
-            headers = {"Referer": "https://finance.sina.com.cn"}
-            url = f"http://hq.sinajs.cn/list=hk{hk_code}"
-            r = session.get(url, headers=headers, timeout=8)
-            text = r.text
-            for line in text.strip().split("\n"):
-                if not line.strip() or "=" not in line:
-                    continue
-                var_name, var_value = line.split("=", 1)
-                var_value = var_value.strip('"; ')
-                fields = var_value.split(",")
-                if len(fields) < 10:
-                    continue
-                name_cn = fields[1] if len(fields) > 1 else ""
-                price = float(fields[6]) if len(fields) > 6 else 0
-                pre_close = float(fields[3]) if len(fields) > 3 else 0
-                change = float(fields[7]) if len(fields) > 7 else 0
-                change_pct = float(fields[8]) if len(fields) > 8 else 0
-                high = float(fields[5]) if len(fields) > 5 else 0
-                low = float(fields[4]) if len(fields) > 4 else 0
-                open_price = float(fields[2]) if len(fields) > 2 else 0
-                volume = float(fields[12]) if len(fields) > 12 else 0
-                amount = float(fields[11]) if len(fields) > 11 else 0
-
-                if price <= 0:
-                    price = pre_close
-
-                fixed_name = _fix_stock_name("hk" + hk_code, name_cn)
-                return {
-                    "code": "hk" + hk_code,
-                    "name": fixed_name,
-                    "price": price,
-                    "change": change,
-                    "change_pct": change_pct,
-                    "open": open_price,
-                    "high": high,
-                    "low": low,
-                    "pre_close": pre_close,
-                    "volume": volume,
-                    "amount": amount,
-                    "type": "stock_hk",
-                }
-        except Exception as e:
-            print(f"新浪港股单股行情失败: {e}")
-
         return None
 
     try:
         df = _cached("stock_spot", _fetch_stock_spot)
-        if df is not None and not df.empty:
-            clean_code = _clean_code(code)
-            mask = df["代码"].str.contains(clean_code, regex=False, na=False)
-            row = df[mask]
-            if not row.empty:
-                r = row.iloc[0]
-                return {
-                    "code": str(r["代码"]),
-                    "name": str(r["名称"]),
-                    "price": float(r["最新价"]),
-                    "change": float(r["涨跌额"]),
-                    "change_pct": float(r["涨跌幅"]),
-                    "open": float(r["今开"]),
-                    "high": float(r["最高"]),
-                    "low": float(r["最低"]),
-                    "pre_close": float(r["昨收"]),
-                    "volume": float(r["成交量"]),
-                    "amount": float(r["成交额"]),
-                    "type": "stock",
-                }
+        if df is None or df.empty:
+            return None
+        clean_code = _clean_code(code)
+        mask = df["代码"].str.contains(clean_code, regex=False, na=False)
+        row = df[mask]
+        if row.empty:
+            return None
+        r = row.iloc[0]
+        return {
+            "code": str(r["代码"]),
+            "name": str(r["名称"]),
+            "price": float(r["最新价"]),
+            "change": float(r["涨跌额"]),
+            "change_pct": float(r["涨跌幅"]),
+            "open": float(r["今开"]),
+            "high": float(r["最高"]),
+            "low": float(r["最低"]),
+            "pre_close": float(r["昨收"]),
+            "volume": float(r["成交量"]),
+            "amount": float(r["成交额"]),
+            "type": "stock",
+        }
     except Exception as e:
-        print(f"从列表获取股票行情失败: {e}")
-
-    try:
-        session = _session()
-        headers = {"Referer": "https://finance.sina.com.cn"}
-        clean_code = _clean_code(code).zfill(6)
-        if clean_code[0] in ('6', '9'):
-            full_code = f"sh{clean_code}"
-        else:
-            full_code = f"sz{clean_code}"
-        url = f"http://hq.sinajs.cn/list={full_code}"
-        r = session.get(url, headers=headers, timeout=8)
-        text = r.text
-        for line in text.strip().split("\n"):
-            if not line.strip() or "=" not in line:
-                continue
-            var_name, var_value = line.split("=", 1)
-            var_value = var_value.strip('"; ')
-            fields = var_value.split(",")
-            if len(fields) < 10:
-                continue
-            name = fields[0]
-            open_price = float(fields[1]) if len(fields) > 1 else 0
-            pre_close = float(fields[2]) if len(fields) > 2 else 0
-            price = float(fields[3]) if len(fields) > 3 else 0
-            high = float(fields[4]) if len(fields) > 4 else 0
-            low = float(fields[5]) if len(fields) > 5 else 0
-            volume = float(fields[8]) if len(fields) > 8 else 0
-            amount = float(fields[9]) if len(fields) > 9 else 0
-            change = price - pre_close
-            change_pct = (change / pre_close * 100) if pre_close > 0 else 0
-
-            if price <= 0:
-                price = pre_close
-
-            fixed_name = _fix_stock_name(clean_code, name)
-            return {
-                "code": clean_code,
-                "name": fixed_name,
-                "price": price,
-                "change": change,
-                "change_pct": change_pct,
-                "open": open_price,
-                "high": high,
-                "low": low,
-                "pre_close": pre_close,
-                "volume": volume,
-                "amount": amount,
-                "type": "stock",
-            }
-    except Exception as e:
-        print(f"新浪单股行情失败: {e}")
-
-    return None
+        print(f"获取股票行情失败: {e}")
+        return None
 
 
 # ========== 历史数据 ==========
 
 def _fetch_em_history(secid: str, days: int = 90) -> list[dict]:
-    """东方财富历史K线（备用）"""
+    """东方财富历史K线（通用）"""
     session = _session()
     url = "http://push2his.eastmoney.com/api/qt/stock/kline/get"
     end_date = pd.Timestamp.now().strftime("%Y%m%d")
@@ -1232,12 +699,12 @@ def _fetch_em_history(secid: str, days: int = 90) -> list[dict]:
 
 
 def _fetch_sina_history(code: str, days: int = 90) -> list[dict]:
-    """新浪历史K线（主数据源）"""
+    """新浪历史K线（备用）"""
     session = _session()
     code = _clean_code(code)
-    if len(code) == 6 and code[0] in ('6', '9', '5'):
+    if len(code) == 6 and code[0] in ('6', '9'):
         full_code = f"sh{code}"
-    elif len(code) == 6 and code[0] in ('0', '3', '1'):
+    elif len(code) == 6 and code[0] in ('0', '3'):
         full_code = f"sz{code}"
     else:
         full_code = f"sz{code}"
@@ -1270,63 +737,15 @@ def _fetch_sina_history(code: str, days: int = 90) -> list[dict]:
         return []
 
 
-def _fetch_tencent_hk_history(code: str, days: int = 90) -> list[dict]:
-    """腾讯财经港股历史K线（主数据源）"""
-    session = _session()
-    url = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-    params = {
-        'param': f'hk{code},day,,,{days + 20},qfq',
-    }
-    try:
-        r = session.get(url, params=params, timeout=12)
-        data = r.json()
-        if not data.get('data'):
-            return []
-        stock_data = data['data'].get(f'hk{code}', {})
-        klines = stock_data.get('qfqday', stock_data.get('day', []))
-        if not klines:
-            return []
-        results = []
-        for kline in klines[-days:]:
-            try:
-                results.append({
-                    "date": str(kline[0]),
-                    "open": float(kline[1]),
-                    "close": float(kline[2]),
-                    "high": float(kline[3]),
-                    "low": float(kline[4]),
-                    "volume": float(kline[5]),
-                    "amount": 0,
-                })
-            except (ValueError, IndexError):
-                continue
-        return results
-    except Exception as e:
-        print(f"腾讯港股历史数据失败 ({code}): {e}")
-        return []
-
-
-def _fetch_sina_hk_history(code: str, days: int = 90) -> list[dict]:
-    """新浪港股历史K线（备用）"""
-    return []
-
-
 def get_stock_history(code: str, period: str = "daily", days: int = 90) -> list[dict]:
-    """获取股票历史K线（多数据源冗余）"""
-    code = str(code).strip().lower()
-    is_hk = code.startswith("hk") or (code.isdigit() and len(code) <= 5)
-    if is_hk:
-        hk_code = code.replace("hk", "").zfill(5)
-        cache_key = f"history_hk_{hk_code}_{days}"
+    """获取股票历史K线"""
+    if code.startswith("hk"):
+        cache_key = f"history_hk_{code}_{days}"
         def _hk_fetcher():
             hk_code = code.replace("hk", "").zfill(5)
-            min_required = min(days, 10)
-            tencent_data = _fetch_tencent_hk_history(hk_code, days)
-            if tencent_data and len(tencent_data) >= min_required:
-                return tencent_data
-            em_data = _fetch_em_history(f"116.{hk_code}", days)
-            if em_data and len(em_data) >= min_required:
-                return em_data
+            data = _fetch_em_history(f"116.{hk_code}", days)
+            if data and len(data) >= 5:
+                return data
             try:
                 df = ak.stock_hk_hist(
                     symbol=hk_code, period=period,
@@ -1355,17 +774,17 @@ def get_stock_history(code: str, period: str = "daily", days: int = 90) -> list[
     cache_key = f"history_{code}_{days}"
     def _fetcher():
         clean_code = _clean_code(code)
-        sina_data = _fetch_sina_history(code, days)
-        min_required = min(days, 10)
-        if sina_data and len(sina_data) >= min_required:
-            return sina_data
-        if len(clean_code) == 6 and clean_code[0] in ('6', '9', '5'):
+        # A股东方财富secid: 沪市1.代码 深市0.代码
+        if len(clean_code) == 6 and clean_code[0] in ('6', '9'):
             secid = f"1.{clean_code}"
         else:
             secid = f"0.{clean_code}"
         em_data = _fetch_em_history(secid, days)
-        if em_data and len(em_data) >= min_required:
+        if em_data and len(em_data) >= 10:
             return em_data
+        sina_data = _fetch_sina_history(code, days)
+        if sina_data and len(sina_data) >= 10:
+            return sina_data
         try:
             df = ak.stock_zh_a_hist(
                 symbol=clean_code, period=period,
@@ -1402,12 +821,11 @@ def search_fund(keyword: str) -> list[dict]:
         return results
 
     try:
-        df = _cached("etf_spot", _fetch_etf_spot, wait=True)
+        df = _cached("etf_spot", _fetch_etf_spot)
         if df is not None and not df.empty and "名称_clean" in df.columns:
             mask = (
                 df["名称"].str.contains(kw, na=False, case=False) |
                 df["名称_clean"].str.contains(kw, na=False, case=False) |
-                df["名称_original"].str.contains(kw, na=False, case=False) |
                 df["代码"].str.contains(kw, na=False)
             )
             matched = df[mask]
@@ -1423,27 +841,24 @@ def search_fund(keyword: str) -> list[dict]:
     except Exception as e:
         print(f"搜索 ETF 失败: {e}")
 
-    if len(results) < 10:
-        try:
-            import akshare as ak
-            df_all = _cached("fund_name", lambda: ak.fund_name_em(), ttl=3600, wait=True)
-            if df_all is not None and not df_all.empty:
-                mask = (df_all["基金简称"].str.contains(kw, na=False, case=False) |
-                        df_all["基金代码"].str.contains(kw, na=False))
-                matched = df_all[mask]
-                for _, row in matched.head(20).iterrows():
-                    code = str(row["基金代码"])
-                    if not any(r["code"] == code for r in results):
-                        results.append({
-                            "code": code,
-                            "name": str(row["基金简称"]),
-                            "price": 0,
-                            "change": 0,
-                            "change_pct": 0,
-                            "type": "fund",
-                        })
-        except Exception as e:
-            print(f"搜索开放式基金失败: {e}")
+    try:
+        df_all = ak.fund_name_em()
+        mask = (df_all["基金简称"].str.contains(kw, na=False, case=False) |
+                df_all["基金代码"].str.contains(kw, na=False))
+        matched = df_all[mask]
+        for _, row in matched.head(20).iterrows():
+            code = str(row["基金代码"])
+            if not any(r["code"] == code for r in results):
+                results.append({
+                    "code": code,
+                    "name": str(row["基金简称"]),
+                    "price": 0,
+                    "change": 0,
+                    "change_pct": 0,
+                    "type": "fund",
+                })
+    except Exception as e:
+        print(f"搜索开放式基金失败: {e}")
 
     return results
 

@@ -12,12 +12,8 @@ from models.database import init_db
 from routes.market import router as market_router
 from routes.trade import router as trade_router
 from routes.analysis import router as analysis_router
-from modules.routes import router as modules_router
-from modules.startup_checker import run_startup_check, ensure_ai_fallback, init_module as init_startup
-from modules.db_manager import init_module_db
-from modules.sim_executor import init_module as init_sim
 
-VERSION = "1.7.0"
+VERSION = "1.5.0"
 VERSION_URL = "https://api.github.com/repos/6Gzhang/fund-stock-web/releases/latest"
 RELEASE_URL = "https://github.com/6Gzhang/fund-stock-web/releases/latest"
 
@@ -31,7 +27,6 @@ _data_loading_status: dict = {
     "etf_spot": "pending",
     "hk_spot": "pending",
     "index_spot": "pending",
-    "fund_name": "pending",
 }
 _data_status_lock = threading.Lock()
 
@@ -44,7 +39,6 @@ init_db()
 app.include_router(market_router)
 app.include_router(trade_router)
 app.include_router(analysis_router)
-app.include_router(modules_router)
 
 # 静态文件
 frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
@@ -70,13 +64,11 @@ async def startup_prefetch():
 
     def _prefetch():
         from data.market import _fetch_stock_spot, _fetch_etf_spot, _fetch_index_spot, _fetch_hk_spot
-        import akshare as ak
         threads = [
             threading.Thread(target=_prefetch_item, args=("stock_spot", _fetch_stock_spot)),
             threading.Thread(target=_prefetch_item, args=("etf_spot", _fetch_etf_spot)),
             threading.Thread(target=_prefetch_item, args=("index_spot", _fetch_index_spot)),
             threading.Thread(target=_prefetch_item, args=("hk_spot", _fetch_hk_spot)),
-            threading.Thread(target=_prefetch_item, args=("fund_name", lambda: ak.fund_name_em())),
         ]
         for t in threads:
             t.daemon = True
@@ -86,26 +78,6 @@ async def startup_prefetch():
         print("所有数据预加载完成")
 
     threading.Thread(target=_prefetch, daemon=True).start()
-
-    # 初始化新模块
-    try:
-        init_module_db()
-        init_sim()
-        init_startup()
-        print("[主程序] 新模块初始化完成")
-    except Exception as e:
-        print(f"[主程序] 新模块初始化失败: {e}")
-
-    # 后台运行开机自检
-    def _delayed_startup_check():
-        time.sleep(3)
-        try:
-            run_startup_check()
-            ensure_ai_fallback()
-        except Exception as e:
-            print(f"[主程序] 开机自检失败: {e}")
-    
-    threading.Thread(target=_delayed_startup_check, daemon=True).start()
 
 
 @app.get("/api/data-status")

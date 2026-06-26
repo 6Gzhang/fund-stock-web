@@ -1171,7 +1171,6 @@ body {
     justify-content: space-between;
     align-items: flex-start;
     margin-bottom: 12px;
-    padding-top: 32px;
 }
 
 .rec-card-name {
@@ -1205,13 +1204,6 @@ body {
     font-weight: 700;
 }
 
-.rec-price-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    font-weight: 400;
-    margin-right: 2px;
-}
-
 .rec-change {
     font-size: 14px;
     font-weight: 600;
@@ -1222,27 +1214,6 @@ body {
     font-weight: 600;
     color: var(--gold);
     background: var(--gold-bg);
-    padding: 3px 8px;
-    border-radius: 4px;
-}
-
-.rec-target-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    font-weight: 400;
-}
-
-.rec-target {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--red);
-}
-
-.rec-gap {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--red);
-    background: var(--red-bg);
     padding: 3px 8px;
     border-radius: 4px;
 }
@@ -1355,7 +1326,7 @@ body {
 
 .rec-card-risk {
     font-size: 11px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     background: rgba(239, 68, 68, 0.08);
     border-radius: 6px;
     border-left: 3px solid var(--red);
@@ -1363,10 +1334,10 @@ body {
 }
 
 .rec-risk-title {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--red);
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 
 .rec-risk-list {
@@ -1378,8 +1349,8 @@ body {
 .rec-risk-list li {
     font-size: 11px;
     color: var(--text-secondary);
-    line-height: 1.5;
-    padding: 2px 0 2px 12px;
+    line-height: 1.4;
+    padding-left: 10px;
     position: relative;
 }
 
@@ -1394,29 +1365,6 @@ body {
     background: var(--red);
 }
 
-.rec-risk-detail {
-    font-size: 11px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-    margin-top: 4px;
-}
-
-.rec-risk-detail-item {
-    padding: 3px 0 3px 12px;
-    position: relative;
-}
-
-.rec-risk-detail-item::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 8px;
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--red);
-}
-
 .rec-card-footer {
     display: flex;
     justify-content: space-between;
@@ -1426,7 +1374,7 @@ body {
     border-top: 1px solid var(--border);
 }
 
-.rec-risk-badge {
+.rec-card-risk {
     font-size: 11px;
     padding: 3px 8px;
     border-radius: 4px;
@@ -1445,33 +1393,31 @@ body {
 
 .rec-rank {
     position: absolute;
-    top: 12px;
-    right: 12px;
-    width: 24px;
-    height: 24px;
+    top: 16px;
+    right: 16px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     background: linear-gradient(135deg, var(--gold), #ff8c00);
     color: white;
     box-shadow: 0 2px 8px rgba(245, 158, 11, 0.4);
-    z-index: 2;
 }
 
 .rec-strength-badge {
-    position: relative;
-    display: inline-block;
+    position: absolute;
+    top: 16px;
+    left: 20px;
     padding: 4px 12px;
     border-radius: 20px;
     font-size: 11px;
     font-weight: 600;
     color: white;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    margin-right: 8px;
-    vertical-align: middle;
 }
 
 .rec-rank.rank-2 {

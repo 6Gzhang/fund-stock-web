@@ -188,23 +188,43 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
     if filtered.empty:
         return []
 
-    # 向量化计算综合评分（大幅提升速度）
+    def _compute_composite_score(row):
+        """综合评分：涨幅(30%) + 量比(25%) + 振幅(15%) + 成交额排名(30%)"""
+        try:
+            change = float(row["涨跌幅"])
+            amount = float(row["成交额"])
+            high = float(row["最高"])
+            low = float(row["最低"])
+            pre_close = float(row["最新价"]) - float(row["涨跌额"])
+
+            amp = ((high - low) / pre_close * 100) if pre_close > 0 else 0
+
+            change_score = max(0, min(100, (change + 3) / 10 * 100))
+            amount_rank = filtered["成交额"].rank(pct=True).loc[row.name] * 100
+            amp_score = min(100, amp * 10)
+
+            volume_ratio = 1.0
+            if "量比" in row:
+                try:
+                    vr = float(row["量比"])
+                    volume_ratio = min(3.0, max(0.5, vr))
+                except Exception:
+                    pass
+            volume_score = min(100, volume_ratio * 50)
+
+            composite = (
+                change_score * 0.30 +
+                volume_score * 0.25 +
+                amp_score * 0.15 +
+                amount_rank * 0.30
+            )
+            return composite
+        except Exception:
+            return 50.0
+
     filtered = filtered.copy()
-    pre_close = filtered["最新价"] - filtered["涨跌额"]
-    amp = ((filtered["最高"] - filtered["最低"]) / pre_close * 100).fillna(0)
-    change_score = ((filtered["涨跌幅"] + 3) / 10 * 100).clip(0, 100)
-    amount_rank = filtered["成交额"].rank(pct=True) * 100
-    amp_score = (amp * 10).clip(0, 100)
-    volume_score = 50.0  # 量比暂时用默认值
-
-    filtered["composite_score"] = (
-        change_score * 0.30 +
-        volume_score * 0.25 +
-        amp_score * 0.15 +
-        amount_rank * 0.30
-    )
-
-    top_candidates = filtered.nlargest(50, "composite_score")  # 增加到50只
+    filtered["composite_score"] = filtered.apply(_compute_composite_score, axis=1)
+    top_candidates = filtered.nlargest(30, "composite_score")  # 减少到30只，提高速度
 
     total_candidates = len(top_candidates)
     done_count = [0]
@@ -218,8 +238,8 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
             price = float(row["最新价"])
             change_pct = float(row["涨跌幅"])
 
-            history = get_stock_history(code, days=45)  # 减少到45天
-            if not history or len(history) < 15:  # 降低最低要求
+            history = get_stock_history(code, days=60)
+            if not history or len(history) < 20:
                 return None
 
             result = _advanced_technical_analysis(
@@ -271,10 +291,10 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
             done_count[0] += 1
             return None
 
-    # 并发分析（10线程）
+    # 并发分析（8线程）
     scored = []
     rows = [row for _, row in top_candidates.iterrows()]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(_analyze_one, row) for row in rows]
         for future in concurrent.futures.as_completed(futures):
             try:
@@ -285,7 +305,7 @@ def _compute_stock_recommendations(market_indices: dict) -> list:
                 continue
 
     scored.sort(key=lambda x: (x["score"], x["upside_pct"]), reverse=True)
-    return scored[:100]  # 返回更多推荐结果
+    return scored[:10]
 
 
 def _compute_fund_recommendations(market_indices: dict) -> list:
@@ -314,13 +334,20 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
     if filtered.empty:
         return []
 
-    # 向量化评分
-    filtered = filtered.copy()
-    change_score = ((filtered["涨跌幅"] + 4) / 10 * 100).clip(0, 100)
-    amount_rank = filtered["成交额"].rank(pct=True) * 100
-    filtered["etf_score"] = change_score * 0.4 + amount_rank * 0.6
+    def _compute_etf_score(row):
+        """ETF 综合评分"""
+        try:
+            change = float(row["涨跌幅"])
+            amount = float(row["成交额"])
+            change_score = max(0, min(100, (change + 4) / 10 * 100))
+            amount_rank = filtered["成交额"].rank(pct=True).loc[row.name] * 100
+            return change_score * 0.4 + amount_rank * 0.6
+        except Exception:
+            return 50.0
 
-    top_candidates = filtered.nlargest(30, "etf_score")  # 增加到30只
+    filtered = filtered.copy()
+    filtered["etf_score"] = filtered.apply(_compute_etf_score, axis=1)
+    top_candidates = filtered.nlargest(20, "etf_score")  # 减少到20只
 
     total_candidates = len(top_candidates)
     done_count = [0]
@@ -334,8 +361,8 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
             price = float(row["最新价"])
             change_pct = float(row["涨跌幅"])
 
-            history = get_stock_history(code, days=45)
-            if not history or len(history) < 10:
+            history = get_stock_history(code, days=60)
+            if not history or len(history) < 15:
                 return None
 
             result = _advanced_technical_analysis(
@@ -385,10 +412,10 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
             done_count[0] += 1
             return None
 
-    # 并发分析（10线程）
+    # 并发分析（8线程）
     scored = []
     rows = [row for _, row in top_candidates.iterrows()]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(_analyze_one, row) for row in rows]
         for future in concurrent.futures.as_completed(futures):
             try:
@@ -399,4 +426,4 @@ def _compute_fund_recommendations(market_indices: dict) -> list:
                 continue
 
     scored.sort(key=lambda x: (x["score"], x["upside_pct"]), reverse=True)
-    return scored[:100]  # 返回更多推荐结果
+    return scored[:10]

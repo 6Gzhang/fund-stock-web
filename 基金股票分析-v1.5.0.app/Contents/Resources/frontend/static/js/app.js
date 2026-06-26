@@ -454,24 +454,13 @@ const App = {
     },
 
     startRecommendPolling() {
-        if (this.recommendPollTimer) {
-            clearInterval(this.recommendPollTimer);
-            this.recommendPollTimer = null;
-        }
+        if (this.recommendPollTimer) return;
         let count = 0;
-        const maxRetries = 120;
         this.recommendPollTimer = setInterval(async () => {
             count++;
-            if (count > maxRetries) {
+            if (count > 120) {
                 clearInterval(this.recommendPollTimer);
                 this.recommendPollTimer = null;
-                const loadingEl = document.getElementById('recommendLoading');
-                if (loadingEl) {
-                    loadingEl.innerHTML = `
-                        <p style="color: var(--gold);">生成超时，请手动刷新</p>
-                        <button class="btn btn-secondary" onclick="App.refreshRecommendations()" style="cursor:pointer;">重新生成</button>
-                    `;
-                }
                 return;
             }
             try {
@@ -491,21 +480,19 @@ const App = {
                 }
 
                 const data = await API.getRecommendations();
-                if (data && (data.stocks?.length || data.funds?.length)) {
-                    if (this.recommendPollTimer) {
-                        clearInterval(this.recommendPollTimer);
-                        this.recommendPollTimer = null;
-                    }
-                    this._recommendData = data;
+                this._recommendData = data;
+                if (data.stocks?.length || data.funds?.length) {
+                    clearInterval(this.recommendPollTimer);
+                    this.recommendPollTimer = null;
                     this.renderRecommendations();
-                    const loadingEl2 = document.getElementById('recommendLoading');
+                    const loadingEl = document.getElementById('recommendLoading');
                     const listEl = document.getElementById('recommendList');
-                    if (loadingEl2) loadingEl2.style.display = 'none';
+                    if (loadingEl) loadingEl.style.display = 'none';
                     if (listEl) listEl.style.display = 'grid';
                     this.showToast('推荐数据已生成', 'success');
                 }
             } catch (e) {
-                // ignore polling errors
+                // ignore
             }
         }, 2000);
     },
@@ -537,9 +524,9 @@ const App = {
                 ...(this._recommendData.funds || []),
             ].sort((a, b) => b.score - a.score);
         } else if (this.recommendType === 'stock') {
-            items = (this._recommendData.stocks || []).slice().sort((a, b) => b.score - a.score);
+            items = this._recommendData.stocks || [];
         } else if (this.recommendType === 'fund') {
-            items = (this._recommendData.funds || []).slice().sort((a, b) => b.score - a.score);
+            items = this._recommendData.funds || [];
         }
 
         if (items.length === 0) {
@@ -561,12 +548,6 @@ const App = {
             const strength = item.strength || '关注';
             const strengthGrad = strengthColors[strength] || strengthColors['关注'];
             const upsidePct = item.upside_pct || 0;
-            const targetPrice = item.target_price || 0;
-            const gap = targetPrice > 0 ? targetPrice - item.price : 0;
-            const gapPct = targetPrice > 0 ? ((targetPrice - item.price) / item.price * 100) : 0;
-            const riskItems = item.sell_reasons || [];
-            const riskLevel = item.risk_level || 'medium';
-            const riskLevelLabels = { low: '低风险', medium: '中风险', high: '高风险' };
 
             return `
             <div class="recommend-card" data-code="${item.code}" data-type="${item.type}" data-name="${item.name}">
@@ -580,15 +561,9 @@ const App = {
                     <span class="rec-card-type type-${item.type}">${typeLabels[item.type] || item.type}</span>
                 </div>
                 <div class="rec-card-price">
-                    <span class="rec-price-label">现价</span>
                     <span class="rec-price ${item.change_pct >= 0 ? 'up' : 'down'}">${item.price.toFixed(2)}</span>
                     <span class="rec-change ${item.change_pct >= 0 ? 'up' : 'down'}">${item.change_pct >= 0 ? '+' : ''}${item.change_pct.toFixed(2)}%</span>
-                    ${targetPrice > 0 ? `
-                    <span class="rec-target-label">目标价</span>
-                    <span class="rec-target">${targetPrice.toFixed(2)}</span>
-                    <span class="rec-gap">价差 ${gap >= 0 ? '+' : ''}${gap.toFixed(2)} (${gapPct >= 0 ? '+' : ''}${gapPct.toFixed(1)}%)</span>
-                    ` : ''}
-                    ${upsidePct > 0 && targetPrice <= 0 ? `<span class="rec-upside">目标空间 +${upsidePct.toFixed(1)}%</span>` : ''}
+                    ${upsidePct > 0 ? `<span class="rec-upside">目标空间 +${upsidePct.toFixed(1)}%</span>` : ''}
                 </div>
                 <div class="rec-card-score">
                     <div class="rec-score-header">
@@ -610,31 +585,17 @@ const App = {
                         ${(item.buy_reasons || ['暂无详细理由']).slice(0, 3).map(r => `<li>${r}</li>`).join('')}
                     </ul>
                 </div>
-                ${riskItems.length > 0 ? `
+                ${item.sell_reasons && item.sell_reasons.length > 0 ? `
                 <div class="rec-card-risk">
                     <div class="rec-risk-title">风险提示</div>
                     <ul class="rec-risk-list">
-                        ${riskItems.slice(0, 2).map(r => `<li>${r}</li>`).join('')}
+                        ${item.sell_reasons.slice(0, 1).map(r => `<li>${r}</li>`).join('')}
                     </ul>
-                    <div class="rec-risk-detail">
-                        <div class="rec-risk-detail-item">行业风险：${riskLevelLabels[riskLevel] || '中风险'}级别</div>
-                        <div class="rec-risk-detail-item">估值风险：需关注市场估值变化</div>
-                        <div class="rec-risk-detail-item">波动率风险：注意短期波动影响</div>
-                    </div>
                 </div>
-                ` : `
-                <div class="rec-card-risk">
-                    <div class="rec-risk-title">风险提示</div>
-                    <div class="rec-risk-detail">
-                        <div class="rec-risk-detail-item">行业风险：${riskLevelLabels[riskLevel] || '中风险'}级别</div>
-                        <div class="rec-risk-detail-item">估值风险：需关注市场估值变化</div>
-                        <div class="rec-risk-detail-item">波动率风险：注意短期波动影响</div>
-                    </div>
-                </div>
-                `}
+                ` : ''}
                 <div class="rec-card-footer">
-                    <span class="rec-risk-badge ${riskLevel}">${riskLevelLabels[riskLevel] || '中风险'}</span>
-                    <span class="rec-card-target">目标价：<span>${targetPrice > 0 ? targetPrice.toFixed(2) : '--'}</span></span>
+                    <span class="rec-card-risk ${item.risk_level}">${riskLabels[item.risk_level] || '中风险'}</span>
+                    <span class="rec-card-target">目标价：<span>${item.target_price ? item.target_price.toFixed(2) : '--'}</span></span>
                 </div>
             </div>
             `;
@@ -739,10 +700,7 @@ const App = {
                 });
             });
         } catch (e) {
-            table.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 40px; color: var(--red);">
-                加载失败：${e.message}<br><br>
-                <button class="btn btn-secondary" onclick="App.loadPositions()" style="cursor:pointer;">点击重试</button>
-            </td></tr>`;
+            table.innerHTML = `<tr><td colspan="9" style="text-align:center; padding: 40px; color: var(--red);">加载失败：${e.message}</td></tr>`;
         }
     },
 

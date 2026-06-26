@@ -1,0 +1,20 @@
+{
+  "orders": [
+    {
+      "id": "ORD17824727450000",
+      "account_id": "default",
+      "code": "600519",
+      "name": "贵州茅台",
+      "price": 1200,
+      "limit_price": null,
+      "shares": 100,
+      "order_type": "market",
+      "action": "buy",
+      "market": "A",
+      "status": "filled",
+      "created_at": "2026-06-26T19:19:05.724279",
+      "filled_at": "2026-06-26T19:19:05.724282",
+      "filled_price": 1200
+    }
+  ]
+}

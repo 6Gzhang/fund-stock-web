@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-06-26T19:09:43.001386",
+  "checks": {
+    "network": "pass",
+    "akshare": "pass",
+    "database": "pass",
+    "data_dir": "pass",
+    "ai": "offline",
+    "memory": "pass",
+    "modules": "pass"
+  },
+  "overall": "pass",
+  "warnings": [
+    "AI处于离线模式，将使用本地指标分析",
+    "psutil未安装，跳过内存检查"
+  ],
+  "errors": []
+}
